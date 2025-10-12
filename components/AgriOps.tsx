@@ -121,9 +121,7 @@ export default function AgriOps(){
     <Button size="sm" variant="outline">Load Brand</Button>
     <div className="space-y-6">
   <GrazingPlanner tenantId={tenantId} />
-  <TierSettings tenantId={tenantId} />
-  <ZonesManager tenantId={tenantId} />
-  <AdsReportPlus tenantId={tenantId} />
+   <AdsReportPlus tenantId={tenantId} />
 </div>
 
     <Button size="sm" variant="outline">Load Tier</Button>
