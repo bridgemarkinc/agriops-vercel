@@ -162,40 +162,265 @@ export default function AgriOps(){
   </div>);
 }
 
-function AdsReportPlus({ tenantId }: { tenantId: string }){
+function AdsReportPlus({ tenantId }: { tenantId: string }) {
   const [startDate, setStartDate] = useState<string>("");
   const [endDate, setEndDate] = useState<string>("");
   const [loading, setLoading] = useState(false);
-  const [totals, setTotals] = useState<{impressions:number, clicks:number}>({impressions:0, clicks:0});
-  const [byZone, setByZone] = useState<Record<string,{impressions:number, clicks:number}>>({});
-  const [series, setSeries] = useState<Array<{date:string, impressions:number, clicks:number}>>([]);
-  const [raw, setRaw] = useState<Array<{type:string, zone:string, created_at:string}>>([]);
+  const [totals, setTotals] = useState<{ impressions: number; clicks: number }>({
+    impressions: 0,
+    clicks: 0,
+  });
+  const [byZone, setByZone] = useState<
+    Record<string, { impressions: number; clicks: number }>
+  >({});
+  const [series, setSeries] = useState<
+    Array<{ date: string; impressions: number; clicks: number }>
+  >([]);
+  const [raw, setRaw] = useState<
+    Array<{ type: string; zone: string; created_at: string }>
+  >([]);
 
-  useEffect(() => { const end = new Date(); const start = new Date(); start.setDate(end.getDate() - 30); setStartDate(start.toISOString().slice(0,10)); setEndDate(end.toISOString().slice(0,10)); }, []);
-  function setPreset(days: number){ const end = new Date(); const start = new Date(); start.setDate(end.getDate() - days); setStartDate(start.toISOString().slice(0,10)); setEndDate(end.toISOString().slice(0,10)); }
+  // Default window = last 30 days
+  useEffect(() => {
+    const end = new Date();
+    const start = new Date();
+    start.setDate(end.getDate() - 30);
+    setStartDate(start.toISOString().slice(0, 10));
+    setEndDate(end.toISOString().slice(0, 10));
+  }, []);
 
-  async function refresh(){
-    if(!supabase){ alert('Supabase not configured'); return; }
-    if(!startDate || !endDate){ return; }
-    setLoading(true);
+  function setPreset(days: number) {
+    const end = new Date();
+    const start = new Date();
+    start.setDate(end.getDate() - days);
+    setStartDate(start.toISOString().slice(0, 10));
+    setEndDate(end.toISOString().slice(0, 10));
   }
-  return (<Card><CardHeader><CardTitle>Ads Report</CardTitle></CardHeader><CardContent className="space-y-4">
-    <div className="grid md:grid-cols-5 gap-3 items-end">
-      <div className="md:col-span-2"><Label>Start</Label><Input type="date" value={startDate} onChange={e=>setStartDate(e.target.value)} /></div>
-      <div className="md:col-span-2"><Label>End</Label><Input type="date" value={endDate} onChange={e=>setEndDate(e.target.value)} /></div>
-      <div className="flex gap-2">
-        <Button type="button" variant="secondary" onClick={()=>setPreset(7)}>7d</Button>
-        <Button type="button" variant="secondary" onClick={()=>setPreset(30)}>30d</Button>
-        <Button type="button" variant="secondary" onClick={()=>setPreset(90)}>90d</Button>
-        <Button type="button">Refresh</Button>
-        <Button type="button" variant="outline">Export CSV</Button>
-      </div>
-    </div>
-    <div className="grid md:grid-cols-3 gap-3">
-      <div className="p-3 rounded-xl border bg-white/60 text-sm">Total Impressions: <b>{totals.impressions}</b></div>
-      <div className="p-3 rounded-xl border bg-white/60 text-sm">Total Clicks: <b>{totals.clicks}</b></div>
-      <div className="p-3 rounded-xl border bg-white/60 text-sm">Overall CTR: <b>—</b></div>
-    </div>
-  </CardContent></Card>);
+
+  function pct(n: number, d: number) {
+    return d > 0 ? ((n / d) * 100).toFixed(2) + "%" : "—";
+  }
+
+  async function refresh() {
+    if (!supabase) {
+      alert("Supabase not configured");
+      return;
+    }
+    if (!startDate || !endDate) return;
+
+    setLoading(true);
+    const { data, error } = await supabase
+      .from("agriops_ad_events")
+      .select("type, zone, created_at")
+      .eq("tenant_id", tenantId)
+      .gte("created_at", new Date(startDate).toISOString())
+      // inclusive end-of-day
+      .lte(
+        "created_at",
+        new Date(new Date(endDate).getTime() + 24 * 60 * 60 * 1000 - 1).toISOString()
+      );
+    setLoading(false);
+
+    if (error) {
+      alert(error.message);
+      return;
+    }
+
+    const rows = (data || []) as Array<{
+      type: "impression" | "click";
+      zone: string | null;
+      created_at: string;
+    }>;
+    setRaw(rows as any);
+
+    // Build totals & by-zone
+    const zoneMap: Record<string, { impressions: number; clicks: number }> = {};
+    const dayMap: Record<string, { impressions: number; clicks: number }> = {};
+    let imp = 0,
+      clk = 0;
+
+    for (const r of rows) {
+      const z = r.zone || "unknown";
+      if (!zoneMap[z]) zoneMap[z] = { impressions: 0, clicks: 0 };
+
+      const day = new Date(r.created_at).toISOString().slice(0, 10);
+      if (!dayMap[day]) dayMap[day] = { impressions: 0, clicks: 0 };
+
+      if (r.type === "impression") {
+        zoneMap[z].impressions++;
+        dayMap[day].impressions++;
+        imp++;
+      } else if (r.type === "click") {
+        zoneMap[z].clicks++;
+        dayMap[day].clicks++;
+        clk++;
+      }
+    }
+
+    setByZone(zoneMap);
+    setTotals({ impressions: imp, clicks: clk });
+
+    const dates = Object.keys(dayMap).sort();
+    setSeries(
+      dates.map((d) => ({
+        date: d,
+        impressions: dayMap[d].impressions,
+        clicks: dayMap[d].clicks,
+      }))
+    );
+  }
+
+  // Auto refresh when tenant or dates change
+  useEffect(() => {
+    if (startDate && endDate) {
+      void refresh();
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [tenantId, startDate, endDate]);
+
+  const zones = Object.keys(byZone).sort();
+
+  function exportCSV() {
+    const headers = ["date", "zone", "type"];
+    const lines = [headers.join(",")].concat(
+      raw.map(
+        (r) =>
+          `${new Date(r.created_at).toISOString().slice(0, 10)},${r.zone},${r.type}`
+      )
+    );
+    const blob = new Blob([lines.join("\n")], {
+      type: "text/csv;charset=utf-8;",
+    });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `ads_${tenantId}_${startDate}_${endDate}.csv`;
+    a.click();
+    URL.revokeObjectURL(url);
+  }
+
+  return (
+    <Card>
+      <CardHeader>
+        <CardTitle>Ads Report</CardTitle>
+      </CardHeader>
+      <CardContent className="space-y-4">
+        <div className="grid md:grid-cols-5 gap-3 items-end">
+          <div className="md:col-span-2">
+            <Label>Start</Label>
+            <Input
+              type="date"
+              value={startDate}
+              onChange={(e) => setStartDate(e.target.value)}
+            />
+          </div>
+          <div className="md:col-span-2">
+            <Label>End</Label>
+            <Input
+              type="date"
+              value={endDate}
+              onChange={(e) => setEndDate(e.target.value)}
+            />
+          </div>
+          <div className="flex gap-2">
+            <Button type="button" variant="secondary" onClick={() => setPreset(7)}>
+              7d
+            </Button>
+            <Button type="button" variant="secondary" onClick={() => setPreset(30)}>
+              30d
+            </Button>
+            <Button type="button" variant="secondary" onClick={() => setPreset(90)}>
+              90d
+            </Button>
+            <Button type="button" onClick={refresh} disabled={loading}>
+              {loading ? "Refreshing…" : "Refresh"}
+            </Button>
+            <Button type="button" variant="outline" onClick={exportCSV}>
+              Export CSV
+            </Button>
+          </div>
+        </div>
+
+        <div className="grid md:grid-cols-3 gap-3">
+          <div className="p-3 rounded-xl border bg-white/60 text-sm">
+            Total Impressions: <b>{totals.impressions}</b>
+          </div>
+          <div className="p-3 rounded-xl border bg-white/60 text-sm">
+            Total Clicks: <b>{totals.clicks}</b>
+          </div>
+          <div className="p-3 rounded-xl border bg-white/60 text-sm">
+            Overall CTR: <b>{pct(totals.clicks, totals.impressions)}</b>
+          </div>
+        </div>
+
+        <div className="h-64 w-full">
+          <ResponsiveContainer width="100%" height="100%">
+            <LineChart
+              data={series}
+              margin={{ top: 5, right: 20, bottom: 5, left: 0 }}
+            >
+              <CartesianGrid strokeDasharray="3 3" />
+              <XAxis dataKey="date" tick={{ fontSize: 12 }} />
+              <YAxis allowDecimals={false} />
+              <Tooltip />
+              <Legend />
+              <Line
+                type="monotone"
+                dataKey="impressions"
+                name="Impressions"
+                stroke="#8884d8"
+                dot={false}
+              />
+              <Line
+                type="monotone"
+                dataKey="clicks"
+                name="Clicks"
+                stroke="#82ca9d"
+                dot={false}
+              />
+            </LineChart>
+          </ResponsiveContainer>
+        </div>
+
+        <div className="overflow-auto border rounded-xl">
+          <table className="w-full text-sm">
+            <thead className="bg-slate-100">
+              <tr>
+                <th className="text-left p-2">Zone</th>
+                <th className="text-left p-2">Impressions</th>
+                <th className="text-left p-2">Clicks</th>
+                <th className="text-left p-2">CTR</th>
+              </tr>
+            </thead>
+            <tbody>
+              {zones.length === 0 && (
+                <tr>
+                  <td className="p-2" colSpan={4}>
+                    No events in range.
+                  </td>
+                </tr>
+              )}
+              {zones.map((z) => (
+                <tr key={z} className="border-top">
+                  <td className="p-2">{z}</td>
+                  <td className="p-2">{byZone[z].impressions}</td>
+                  <td className="p-2">{byZone[z].clicks}</td>
+                  <td className="p-2">
+                    {pct(byZone[z].clicks, byZone[z].impressions)}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+
+        <p className="text-xs text-slate-500">
+          CTR = Clicks ÷ Impressions. Export includes one row per event within the
+          selected dates.
+        </p>
+      </CardContent>
+    </Card>
+  );
+
 }
 function AdminBrandDirectory(){ return null; }
