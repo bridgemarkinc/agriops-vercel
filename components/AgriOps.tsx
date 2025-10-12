@@ -177,7 +177,7 @@ function AdsReportPlus({ tenantId }: { tenantId: string }){
   async function refresh(){
     if(!supabase){ alert('Supabase not configured'); return; }
     if(!startDate || !endDate){ return; }
-    setLoading(True);
+    setLoading(true);
   }
   return (<Card><CardHeader><CardTitle>Ads Report</CardTitle></CardHeader><CardContent className="space-y-4">
     <div className="grid md:grid-cols-5 gap-3 items-end">
