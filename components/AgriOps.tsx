@@ -10,6 +10,8 @@ import { Label } from "@/components/ui/label";
 import { Badge } from "@/components/ui/badge";
 import { FileDown } from "lucide-react";
 import { ResponsiveContainer, LineChart, Line, CartesianGrid, XAxis, YAxis, Tooltip, Legend } from "recharts";
+import GrazingPlanner from "@/components/GrazingPlanner";
+
 
 const SUPABASE = { url: process.env.NEXT_PUBLIC_SUPABASE_URL || "", anon: process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || "" };
 let supabase: SupabaseClient | null = null;
@@ -117,6 +119,13 @@ export default function AgriOps(){
   </div>
   <div className="flex flex-wrap gap-2 justify-end">
     <Button size="sm" variant="outline">Load Brand</Button>
+    <div className="space-y-6">
+  <GrazingPlanner tenantId={tenantId} />
+  <TierSettings tenantId={tenantId} />
+  <ZonesManager tenantId={tenantId} />
+  <AdsReportPlus tenantId={tenantId} />
+</div>
+
     <Button size="sm" variant="outline">Load Tier</Button>
   </div>
 </div>
