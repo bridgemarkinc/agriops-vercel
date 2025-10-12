@@ -108,18 +108,18 @@ export default function AgriOps(){
   };
 
   return (<div className="p-6 max-w-6xl mx-auto space-y-6">
-    <div className="flex items-center justify-between">
-      <div className="flex items-center gap-3">
-        <img src={brand.logoUrl} className="h-10 rounded bg-white/70 p-1" alt="logo"/>
-        <div><h1 className="text-2xl font-bold" style={{color:brand.accent}}>{brand.appName}</h1><p className="text-xs text-slate-500">Tenant: <b>{tenantId}</b></p></div>
-      </div>
-      <div className="flex items-center gap-2">
-        <Input className="w-52" value={tenantId} onChange={e=>setTenantId(e.target.value)} placeholder="tenant id or domain"/>
-        <Button variant="secondary" onClick={brandCloudLoad}>Load Brand</Button>
-        <Button variant="outline" onClick={brandCloudSave}>Save Brand</Button>
-        <Button variant="outline" onClick={exportPDF}><FileDown className="w-4 h-4 mr-2"/>Brief PDF</Button>
-      </div>
-    </div>
+    <div className="flex flex-col md:flex-row md:items-center md:justify-between gap-3 mb-4">
+  <div className="flex items-center gap-3">
+    <img src="/blackriver-logo.png"
+    alt="Black River Logo"
+    className="h-10 w-auto opacity-90" />
+    <h1 className="text-xl font-semibold">{brand?.orgName || "AgriOps"}</h1>
+  </div>
+  <div className="flex flex-wrap gap-2 justify-end">
+    <Button size="sm" variant="outline">Load Brand</Button>
+    <Button size="sm" variant="outline">Load Tier</Button>
+  </div>
+</div>
 
     <div className="grid md:grid-cols-3 gap-6">
       <div className="md:col-span-2 space-y-6">
