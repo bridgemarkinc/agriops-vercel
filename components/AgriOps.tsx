@@ -1,5 +1,6 @@
 
 "use client";
+import GrazingPlanner from "@/components/GrazingPlanner";
 import React, { useEffect, useState } from "react";
 import { createClient, SupabaseClient } from "@supabase/supabase-js";
 import jsPDF from "jspdf";
@@ -10,7 +11,7 @@ import { Label } from "@/components/ui/label";
 import { Badge } from "@/components/ui/badge";
 import { FileDown } from "lucide-react";
 import { ResponsiveContainer, LineChart, Line, CartesianGrid, XAxis, YAxis, Tooltip, Legend } from "recharts";
-import GrazingPlanner from "@/components/GrazingPlanner";
+
 
 
 const SUPABASE = { url: process.env.NEXT_PUBLIC_SUPABASE_URL || "", anon: process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || "" };
