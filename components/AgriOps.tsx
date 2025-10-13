@@ -112,7 +112,7 @@ export default function AgriOps(){
   };
 
   return (<div className="p-6 max-w-6xl mx-auto space-y-6">
-    <div className="w-full flex justify-center mb-4">
+    <div className="w-full flex justify-center mb-1">
   <div className="flex items-center gap-3">
     <img src="/blackriver-logo.png"
     alt="Black River Logo"
