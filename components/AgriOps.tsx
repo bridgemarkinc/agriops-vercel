@@ -53,7 +53,10 @@ export default function AgriOps(){
   const reservedDM=hayDMNeeded+suppDMNeeded;
   const effDM=Math.max(0,totalFeedDM-reservedDM);
   const coverageDays=dailyNeed>0?effDM/dailyNeed:0;
-
+  
+<div className="w-full flex justify-center mb-3">
+  <img src="/blackriver-logo.png" alt="Black River" className="h-10 w-auto block" />
+</div>
   async function brandCloudLoad() {
     if (!supabase) return alert("Supabase not configured");
     const { data, error } = await supabase.from("agriops_brands").select("tenant_id, org_name, app_name, accent, logo_url").eq("tenant_id", tenantId).maybeSingle();
