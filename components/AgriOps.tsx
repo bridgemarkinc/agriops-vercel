@@ -1,6 +1,7 @@
 
 "use client";
 import GrazingPlanner from "@/components/GrazingPlanner";
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import React, { useEffect, useState } from "react";
 import { createClient, SupabaseClient } from "@supabase/supabase-js";
 import jsPDF from "jspdf";
@@ -111,7 +112,7 @@ export default function AgriOps(){
   };
 
   return (<div className="p-6 max-w-6xl mx-auto space-y-6">
-    <div className="flex flex-col md:flex-row md:items-center md:justify-between gap-3 mb-4">
+    <div className="w-full flex justify-center mb-4">
   <div className="flex items-center gap-3">
     <img src="/blackriver-logo.png"
     alt="Black River Logo"
@@ -122,7 +123,6 @@ export default function AgriOps(){
     <Button size="sm" variant="outline">Load Brand</Button>
     <div className="space-y-6">
   <GrazingPlanner tenantId={tenantId} />
-   <AdsReportPlus tenantId={tenantId} />
 </div>
 
     <Button size="sm" variant="outline">Load Tier</Button>
@@ -165,7 +165,8 @@ export default function AgriOps(){
       <div className="space-y-4"><AdPanel zone="sidebar-1"/><AdPanel zone="sidebar-2"/></div>
     </div>
 
-    <AdsReportPlus tenantId={tenantId} />
+    {/* <AdsReportPlus tenantId={tenantId} /> */}
+
     <AdminBrandDirectory />
   </div>);
 }
