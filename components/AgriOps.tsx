@@ -1,6 +1,7 @@
 "use client";
 
 import React, { useEffect, useMemo, useState } from "react";
+import CattleByTag from "@/components/CattleByTag";
 import { createClient, SupabaseClient } from "@supabase/supabase-js";
 import GrazingPlanner from "@/components/GrazingPlanner";
 import { Button } from "@/components/ui/button";
@@ -140,7 +141,10 @@ export default function AgriOps() {
           {/* Right column: reserved for future (Reports, Inventory, Ads, etc.) */}
           <div className="space-y-6">{/* Future modules go here */}</div>
         </div>
-      </div>
+      </div><div className="space-y-6">
+  <GrazingPlanner tenantId={tenantId} />
+  <CattleByTag tenantId={tenantId} />
+</div>
     </div>
   );
 }
