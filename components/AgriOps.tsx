@@ -19,7 +19,7 @@ if (typeof window !== "undefined" && SUPABASE.url.startsWith("http")) {
   supabase = createClient(SUPABASE.url, SUPABASE.anon);
 }
 
-// pick default tenant from env or current host
+// Pick default tenant from env or current host
 function getDefaultTenant() {
   if (typeof window !== "undefined" && window.location?.hostname) {
     return process.env.NEXT_PUBLIC_TENANT || window.location.hostname;
@@ -45,8 +45,11 @@ export default function AgriOps() {
     setLoading(true);
     const { data, error } = await supabase
       .from("agriops_brands")
-      .select("*")
+      // deterministic: if duplicates exist, take the newest row
+      .select("org_name,app_name,logo_url,accent,id")
       .eq("tenant_id", tenantId)
+      .order("id", { ascending: false })
+      .limit(1)
       .maybeSingle();
     setLoading(false);
     if (error) return alert(error.message);
@@ -68,21 +71,27 @@ export default function AgriOps() {
     () => brand.app_name || "AgriOps – Grazing & Feed Planner",
     [brand.app_name]
   );
-  const logoSrc = useMemo(
-    () => brand.logo_url || "/blackriver-logo.png",
-    [brand.logo_url]
-  );
+
+  // Prefer a real remote logo, ignore placeholders, fall back to /public asset
+  const logoSrc = useMemo(() => {
+    const remote = (brand.logo_url || "").trim();
+    if (!remote) return "/blackriver-logo.png";
+    // ignore common placeholder hosts
+    if (/(^|\.)placehold\.co/i.test(remote)) return "/blackriver-logo.png";
+    return remote;
+  }, [brand.logo_url]);
+
+  // Soft header background color (brand.accent or gentle default)
+  const headerBg = brand.accent && brand.accent.trim() !== "" ? brand.accent : "#dbece0";
 
   return (
     <div className="min-h-screen bg-slate-50">
-      {/* Centered page container */}
-      <div className="max-w-6xl mx-auto px-4 py-6">
-        {/* Header:
-            - On mobile: stacked (logo centered, controls below centered)
-            - On md+: grid with centered logo and right-aligned controls */}
-        <div className="mb-6">
+      {/* ───────────────── Header with soft background & larger logo ───────────────── */}
+      <div className="w-full py-4 mb-6" style={{ backgroundColor: headerBg }}>
+        <div className="max-w-6xl mx-auto px-4">
+          {/* On mobile: stacked & centered; on md+: 3-column with centered logo, right controls */}
           <div className="flex flex-col items-center gap-3 md:grid md:grid-cols-3 md:items-center">
-            {/* left spacer for md+ (keeps logo truly centered) */}
+            {/* left spacer (keeps logo perfectly centered on md+) */}
             <div className="hidden md:block" />
 
             {/* centered logo */}
@@ -90,14 +99,12 @@ export default function AgriOps() {
               <img
                 src={logoSrc}
                 alt={brand.org_name || "Black River"}
-                className="h-10 w-auto block"
+                className="h-14 md:h-16 w-auto block mx-auto drop-shadow-sm"
               />
               <h1 className="sr-only">{appTitle}</h1>
             </div>
 
-            {/* controls:
-                - mobile: centered under logo
-                - md+: right-aligned */}
+            {/* right controls */}
             <div className="w-full md:w-auto md:justify-self-end">
               <div className="flex flex-wrap gap-2 justify-center md:justify-end">
                 <Input
@@ -119,8 +126,11 @@ export default function AgriOps() {
             </div>
           </div>
         </div>
+      </div>
 
-        {/* Main layout: centered within container */}
+      {/* ───────────────── Centered page container ───────────────── */}
+      <div className="max-w-6xl mx-auto px-4 pb-8">
+        {/* Main layout */}
         <div className="grid md:grid-cols-2 gap-6">
           {/* Left column: core tools */}
           <div className="space-y-6">
@@ -128,9 +138,7 @@ export default function AgriOps() {
           </div>
 
           {/* Right column: reserved for future (Reports, Inventory, Ads, etc.) */}
-          <div className="space-y-6">
-            {/* Future: Reports / Inventory / Ads */}
-          </div>
+          <div className="space-y-6">{/* Future modules go here */}</div>
         </div>
       </div>
     </div>
