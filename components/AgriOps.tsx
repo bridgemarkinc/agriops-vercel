@@ -142,8 +142,7 @@ export default function AgriOps() {
           <div className="space-y-6">{/* Future modules go here */}</div>
         </div>
       </div><div className="space-y-6">
-  <GrazingPlanner tenantId={tenantId} />
-  <CattleByTag tenantId={tenantId} />
+    <CattleByTag tenantId={tenantId} />
 </div>
     </div>
   );
