@@ -4,6 +4,11 @@ export const dynamic = "force-dynamic";
 import { NextRequest, NextResponse } from "next/server";
 import { createClient } from "@supabase/supabase-js";
 
+const SUPABASE_URL = process.env.NEXT_PUBLIC_SUPABASE_URL!;
+const SERVICE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY!;
+
+// Use the service role key here for secure writes/deletes
+const supabase = createClient(SUPABASE_URL, SERVICE_KEY);
 const url = process.env.NEXT_PUBLIC_SUPABASE_URL!;
 const serviceKey = process.env.SUPABASE_SERVICE_ROLE_KEY!;
 const admin = createClient(url, serviceKey);
@@ -38,7 +43,17 @@ export async function POST(req: NextRequest) {
       if (error) throw error;
       return NextResponse.json({ ok: true });
     }
+if (action === "deleteProtocol") {
+  const { id, tenant_id } = body;
+  const { error } = await supabase
+    .from("agriops_protocols")
+    .delete()
+    .eq("tenant_id", tenant_id)
+    .eq("id", id);
 
+  if (error) return NextResponse.json({ ok: false, error: error.message });
+  return NextResponse.json({ ok: true });
+}
     // FEEDING
     if (action === "upsertRation") {
       const { payload } = body;
