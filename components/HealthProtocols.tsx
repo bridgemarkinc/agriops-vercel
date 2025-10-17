@@ -11,9 +11,9 @@ type Protocol = {
   tenant_id: string;
   name: string;
   trigger?: string | null;
-  steps?: string[] | any[];       // stored as JSON array
+  steps?: string[] | any[]; // stored as JSON array
   notes?: string | null;
-  created_at?: string | null;     // ISO string
+  created_at?: string | null;
 };
 
 type SortKey = "name" | "trigger" | "steps" | "created_at";
@@ -28,22 +28,27 @@ export default function HealthProtocols({ tenantId }: { tenantId: string }) {
   const [sortKey, setSortKey] = useState<SortKey>("name");
   const [sortDir, setSortDir] = useState<SortDir>("asc");
 
+  // editing
+  const [editingId, setEditingId] = useState<number | null>(null);
+  const [editDraft, setEditDraft] = useState<{ name: string; trigger: string; steps: string; notes: string }>({
+    name: "",
+    trigger: "",
+    steps: "",
+    notes: "",
+  });
+
   function toggleSort(key: SortKey) {
-    if (key === sortKey) {
-      setSortDir((d) => (d === "asc" ? "desc" : "asc"));
-    } else {
+    if (key === sortKey) setSortDir((d) => (d === "asc" ? "desc" : "asc"));
+    else {
       setSortKey(key);
       setSortDir("asc");
     }
   }
-
   function arrowFor(key: SortKey) {
     if (key !== sortKey) return "↕";
     return sortDir === "asc" ? "▲" : "▼";
-    // (kept simple for no-icon environments)
   }
 
-  /* Load all existing protocols */
   async function loadProtocols() {
     setLoading(true);
     try {
@@ -62,7 +67,6 @@ export default function HealthProtocols({ tenantId }: { tenantId: string }) {
     }
   }
 
-  /* Add a new protocol */
   async function addProtocol() {
     if (!draft.name.trim()) return alert("Protocol name is required");
     const payload = {
@@ -88,7 +92,6 @@ export default function HealthProtocols({ tenantId }: { tenantId: string }) {
     }
   }
 
-  /* Delete an existing protocol */
   async function handleDelete(id: number) {
     if (!confirm("Are you sure you want to delete this protocol?")) return;
     try {
@@ -99,7 +102,51 @@ export default function HealthProtocols({ tenantId }: { tenantId: string }) {
       });
       const json = await res.json();
       if (!json.ok) throw new Error(json.error || "Delete failed");
-      await loadProtocols(); // refresh list
+      await loadProtocols();
+    } catch (err: any) {
+      alert(err.message);
+    }
+  }
+
+  // start editing a row
+  function startEdit(p: Protocol) {
+    setEditingId(p.id);
+    setEditDraft({
+      name: p.name || "",
+      trigger: p.trigger || "",
+      steps: Array.isArray(p.steps) ? p.steps.join(", ") : "",
+      notes: p.notes || "",
+    });
+  }
+  function cancelEdit() {
+    setEditingId(null);
+  }
+  async function saveEdit(id: number) {
+    const stepsArray =
+      editDraft.steps
+        .split(",")
+        .map((s) => s.trim())
+        .filter(Boolean) || [];
+    try {
+      const res = await fetch("/api/care", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          action: "updateProtocol",
+          id,
+          tenant_id: tenantId,
+          patch: {
+            name: editDraft.name.trim(),
+            trigger: editDraft.trigger || null,
+            steps: stepsArray,
+            notes: editDraft.notes || null,
+          },
+        }),
+      });
+      const json = await res.json();
+      if (!json.ok) throw new Error(json.error || "Update failed");
+      setEditingId(null);
+      await loadProtocols();
     } catch (err: any) {
       alert(err.message);
     }
@@ -113,14 +160,10 @@ export default function HealthProtocols({ tenantId }: { tenantId: string }) {
     const collator = new Intl.Collator(undefined, { sensitivity: "base" });
     const toVal = (p: Protocol, key: SortKey) => {
       switch (key) {
-        case "name":
-          return p.name ?? "";
-        case "trigger":
-          return (p.trigger ?? "") as string;
-        case "steps":
-          return Array.isArray(p.steps) ? p.steps.length : 0;
-        case "created_at":
-          return p.created_at ? Date.parse(p.created_at) : 0;
+        case "name": return p.name ?? "";
+        case "trigger": return (p.trigger ?? "") as string;
+        case "steps": return Array.isArray(p.steps) ? p.steps.length : 0;
+        case "created_at": return p.created_at ? Date.parse(p.created_at) : 0;
       }
     };
     const arr = [...protocols];
@@ -187,75 +230,125 @@ export default function HealthProtocols({ tenantId }: { tenantId: string }) {
           </div>
         </div>
 
-        {/* Protocol list (sortable) */}
+        {/* Protocol list (sortable + inline edit) */}
         <div className="overflow-auto border rounded-lg bg-white/80">
           <table className="w-full text-sm">
             <thead className="bg-slate-100">
               <tr>
                 <th className="text-left p-2">
-                  <button
-                    type="button"
-                    className="inline-flex items-center gap-1 hover:underline"
-                    onClick={() => toggleSort("name")}
-                    title="Sort by name"
-                  >
+                  <button type="button" className="inline-flex items-center gap-1 hover:underline" onClick={() => toggleSort("name")}>
                     Name <span className="text-xs">{arrowFor("name")}</span>
                   </button>
                 </th>
                 <th className="text-left p-2">
-                  <button
-                    type="button"
-                    className="inline-flex items-center gap-1 hover:underline"
-                    onClick={() => toggleSort("trigger")}
-                    title="Sort by trigger"
-                  >
+                  <button type="button" className="inline-flex items-center gap-1 hover:underline" onClick={() => toggleSort("trigger")}>
                     Trigger <span className="text-xs">{arrowFor("trigger")}</span>
                   </button>
                 </th>
                 <th className="text-left p-2">
-                  <button
-                    type="button"
-                    className="inline-flex items-center gap-1 hover:underline"
-                    onClick={() => toggleSort("steps")}
-                    title="Sort by number of steps"
-                  >
+                  <button type="button" className="inline-flex items-center gap-1 hover:underline" onClick={() => toggleSort("steps")}>
                     Steps <span className="text-xs">{arrowFor("steps")}</span>
                   </button>
                 </th>
                 <th className="text-left p-2">
-                  <button
-                    type="button"
-                    className="inline-flex items-center gap-1 hover:underline"
-                    onClick={() => toggleSort("created_at")}
-                    title="Sort by created date"
-                  >
+                  <button type="button" className="inline-flex items-center gap-1 hover:underline" onClick={() => toggleSort("created_at")}>
                     Created <span className="text-xs">{arrowFor("created_at")}</span>
                   </button>
                 </th>
-                <th className="text-right p-2 w-28">Actions</th>
+                <th className="text-right p-2 w-40">Actions</th>
               </tr>
             </thead>
             <tbody>
-              {sorted.map((p) => (
-                <tr key={p.id} className="border-t">
-                  <td className="p-2 font-medium">{p.name}</td>
-                  <td className="p-2">{p.trigger ?? "—"}</td>
-                  <td className="p-2">{Array.isArray(p.steps) ? p.steps.length : 0}</td>
-                  <td className="p-2">
-                    {p.created_at
-                      ? new Date(p.created_at).toLocaleDateString()
-                      : "—"}
-                  </td>
-                  <td className="p-2 text-right">
-                    <button
-                      className="text-xs px-2 py-1 rounded-md border border-red-400 text-red-600 hover:bg-red-50 transition"
-                      onClick={() => handleDelete(p.id)}
-                    >
-                      Delete
-                    </button>
-                  </td>
-                </tr>
-              ))}
+              {sorted.map((p) => {
+                const isEditing = editingId === p.id;
+                return (
+                  <tr key={p.id} className="border-t align-top">
+                    {/* Name */}
+                    <td className="p-2">
+                      {isEditing ? (
+                        <Input
+                          value={editDraft.name}
+                          onChange={(e) => setEditDraft({ ...editDraft, name: e.target.value })}
+                        />
+                      ) : (
+                        <span className="font-medium">{p.name}</span>
+                      )}
+                    </td>
+
+                    {/* Trigger */}
+                    <td className="p-2">
+                      {isEditing ? (
+                        <Input
+                          value={editDraft.trigger}
+                          onChange={(e) => setEditDraft({ ...editDraft, trigger: e.target.value })}
+                        />
+                      ) : (
+                        p.trigger ?? "—"
+                      )}
+                    </td>
+
+                    {/* Steps */}
+                    <td className="p-2">
+                      {isEditing ? (
+                        <Input
+                          value={editDraft.steps}
+                          onChange={(e) => setEditDraft({ ...editDraft, steps: e.target.value })}
+                          placeholder="Comma-separated"
+                        />
+                      ) : Array.isArray(p.steps) ? (
+                        p.steps.length
+                      ) : (
+                        0
+                      )}
+                    </td>
+
+                    {/* Created */}
+                    <td className="p-2">
+                      {p.created_at ? new Date(p.created_at).toLocaleDateString() : "—"}
+                    </td>
+
+                    {/* Actions */}
+                    <td className="p-2 text-right">
+  {editingId === p.id ? (
+    <div className="flex gap-2 justify-end">
+      <Button size="sm" onClick={() => saveEdit(p.id)}>Save</Button>
+      <Button size="sm" variant="outline" onClick={cancelEdit}>Cancel</Button>
+    </div>
+  ) : (
+    <div className="flex gap-2 justify-end">
+      <Button
+        size="sm"
+        variant="outline"
+        onClick={() => startEdit(p)}
+        className="text-blue-600 border-blue-300 hover:bg-blue-50"
+      >
+        ✏️ Edit
+      </Button>
+      <Button
+        size="sm"
+        variant="destructive"
+        onClick={() => handleDelete(p.id)}
+        className="bg-red-600 hover:bg-red-700 text-white"
+      >
+        🗑️ Delete
+      </Button>
+    </div>
+  )}
+
+  {editingId === p.id && (
+    <div className="mt-2 text-left">
+      <Label>Notes</Label>
+      <Input
+        value={editDraft.notes}
+        onChange={(e) => setEditDraft({ ...editDraft, notes: e.target.value })}
+        placeholder="Edit notes..."
+      />
+    </div>
+                      )}
+                    </td>
+                  </tr>
+                );
+              })}
               {sorted.length === 0 && (
                 <tr>
                   <td className="p-2 text-center text-slate-500" colSpan={5}>
