@@ -1,6 +1,6 @@
 /* app/api/care/route.ts
    Secure server actions for Care OS:
-   - Protocols: upsertProtocol, deleteProtocol, assignProtocol, updateProtocolAssignment
+   - Protocols: listProtocols, addProtocol, upsertProtocol, deleteProtocol, assignProtocol, updateProtocolAssignment
    - Feeding:   upsertRation, upsertFeedingSchedule, recordFeedingEvent
    - Monitoring/Alerts: logVitals, createAlert, resolveAlert
 */
@@ -11,13 +11,7 @@ export const dynamic = "force-dynamic";
 import { NextRequest, NextResponse } from "next/server";
 import { createClient } from "@supabase/supabase-js";
 
-/* ──────────────────────────────────────────────────────────
-   Supabase (service-role) — SERVER ONLY
-   Make sure these env vars are set in Vercel:
-   - NEXT_PUBLIC_SUPABASE_URL
-   - SUPABASE_SERVICE_ROLE_KEY
-   (DO NOT expose the service key on the client)
-────────────────────────────────────────────────────────── */
+/* ───────── Supabase (service-role) — SERVER ONLY ───────── */
 const SUPABASE_URL = process.env.NEXT_PUBLIC_SUPABASE_URL!;
 const SERVICE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY!;
 
@@ -29,9 +23,7 @@ if (!SUPABASE_URL || !SERVICE_KEY) {
 
 const admin = createClient(SUPABASE_URL, SERVICE_KEY);
 
-/* ──────────────────────────────────────────────────────────
-   Helpers
-────────────────────────────────────────────────────────── */
+/* Helpers */
 function ok(data?: any) {
   return NextResponse.json({ ok: true, ...(data ? { data } : {}) });
 }
@@ -39,7 +31,7 @@ function err(message: string, status = 400) {
   return NextResponse.json({ ok: false, error: message }, { status });
 }
 
-/* Optional: quick health check (GET) */
+/* Optional: health check */
 export async function GET() {
   return ok({ route: "care", status: "ready" });
 }
@@ -49,12 +41,54 @@ export async function POST(req: NextRequest) {
   try {
     const body = await req.json();
     const action = String(body?.action || "");
-
     if (!action) return err("Missing 'action'");
 
     /* ───────────── PROTOCOLS ───────────── */
 
-    // Upsert a protocol template
+    // List protocols for a tenant
+    // body: { tenant_id }
+    if (action === "listProtocols") {
+      const { tenant_id } = body;
+      if (!tenant_id) return err("tenant_id is required");
+      const { data, error } = await admin
+        .from("agriops_protocols")
+        .select("*")
+        .eq("tenant_id", tenant_id)
+        .order("created_at", { ascending: false })
+        .order("id", { ascending: false });
+      if (error) return err(error.message, 500);
+      return ok(data);
+    }
+
+    // Add a protocol (simple insert)
+    // body: { tenant_id, name, trigger?, steps?, notes? }
+    // steps is expected to be an array (we'll coerce if a string is passed)
+    if (action === "addProtocol") {
+      const { tenant_id, name, trigger, steps, notes } = body;
+      if (!tenant_id || !name) {
+        return err("tenant_id and name are required");
+      }
+      let stepsJson: any = [];
+      if (Array.isArray(steps)) {
+        stepsJson = steps;
+      } else if (typeof steps === "string") {
+        stepsJson = steps
+          .split(",")
+          .map((s) => s.trim())
+          .filter(Boolean);
+      }
+      const { error } = await admin.from("agriops_protocols").insert({
+        tenant_id,
+        name,
+        trigger: trigger ?? null,
+        steps: stepsJson ?? [],
+        notes: notes ?? null,
+      });
+      if (error) return err(error.message, 500);
+      return ok();
+    }
+
+    // Upsert a protocol template (kept for other callers)
     // body.payload: { tenant_id, name, species?, trigger?, steps:[], notes? }
     if (action === "upsertProtocol") {
       const { payload } = body;
@@ -101,7 +135,7 @@ export async function POST(req: NextRequest) {
       return ok();
     }
 
-    // Update a protocol assignment (e.g., status, next_due_date, completed_steps)
+    // Update a protocol assignment
     // body: { id, tenant_id, patch }
     if (action === "updateProtocolAssignment") {
       const { id, tenant_id, patch } = body;
@@ -126,9 +160,7 @@ export async function POST(req: NextRequest) {
       if (!payload?.tenant_id || !payload?.name) {
         return err("payload.tenant_id and payload.name are required");
       }
-      const { error } = await admin
-        .from("agriops_feed_rations")
-        .upsert(payload);
+      const { error } = await admin.from("agriops_feed_rations").upsert(payload);
       if (error) return err(error.message, 500);
       return ok();
     }
@@ -161,9 +193,7 @@ export async function POST(req: NextRequest) {
       if (!payload?.tenant_id || !payload?.event_ts) {
         return err("payload.tenant_id and payload.event_ts are required");
       }
-      const { error } = await admin
-        .from("agriops_feeding_events")
-        .insert(payload);
+      const { error } = await admin.from("agriops_feeding_events").insert(payload);
       if (error) return err(error.message, 500);
       return ok();
     }
@@ -174,11 +204,7 @@ export async function POST(req: NextRequest) {
     // body.payload: { tenant_id, animal_id, reading_date, temp_c?, rumination_min?, steps?, bcs?, notes? }
     if (action === "logVitals") {
       const { payload } = body;
-      if (
-        !payload?.tenant_id ||
-        !payload?.animal_id ||
-        !payload?.reading_date
-      ) {
+      if (!payload?.tenant_id || !payload?.animal_id || !payload?.reading_date) {
         return err(
           "payload.tenant_id, payload.animal_id and payload.reading_date are required"
         );
