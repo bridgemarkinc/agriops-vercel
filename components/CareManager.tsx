@@ -1,25 +1,49 @@
 "use client";
-import React from "react";
-import { Card, CardHeader, CardTitle, CardContent } from "@/components/ui/card";
 
-/**
- * CareManager
- * Handles health treatment protocols, feeding schedules, and animal vitals
- */
+import React, { useState } from "react";
+import HealthProtocols from "@/components/HealthProtocols";
+import FeedingSchedules from "@/components/FeedingSchedules";
+import HealthMonitor from "@/components/HealthMonitor";
+import { Card, CardHeader, CardTitle, CardContent } from "@/components/ui/card";
+import { Button } from "@/components/ui/button";
+
 export default function CareManager({ tenantId }: { tenantId: string }) {
+  const [subTab, setSubTab] = useState<"protocols" | "feeding" | "monitor">("protocols");
+
+  const pill = (k: typeof subTab, label: string) => (
+    <Button
+      key={k}
+      type="button"
+      variant={subTab === k ? "default" : "outline"}
+      className="rounded-full"
+      onClick={() => setSubTab(k)}
+    >
+      {label}
+    </Button>
+  );
+
   return (
     <Card>
       <CardHeader>
-        <CardTitle>Care & Health Management</CardTitle>
+        <div className="pb-2">
+          <CardTitle>Care & Health</CardTitle>
+        </div>
       </CardHeader>
-      <CardContent className="space-y-4">
-        <p>This module will track:</p>
-        <ul className="list-disc ml-6">
-          <li>Health protocols (vaccines, deworming, etc.)</li>
-          <li>Feeding schedules and ration plans</li>
-          <li>Vitals monitoring (temperature, rumination, activity)</li>
-          <li>Automatic alerts for overdue treatments</li>
-        </ul>
+
+      <CardContent>
+        <div className="space-y-6">
+          {/* Sub-tabs */}
+          <div className="flex flex-wrap gap-2">
+            {pill("protocols", "Protocols")}
+            {pill("feeding", "Feeding")}
+            {pill("monitor", "Monitoring")}
+          </div>
+
+          {/* Panels */}
+          {subTab === "protocols" && <HealthProtocols tenantId={tenantId} />}
+          {subTab === "feeding" && <FeedingSchedules tenantId={tenantId} />}
+          {subTab === "monitor" && <HealthMonitor tenantId={tenantId} />}
+        </div>
       </CardContent>
     </Card>
   );
