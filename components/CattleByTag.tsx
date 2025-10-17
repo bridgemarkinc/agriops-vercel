@@ -7,6 +7,29 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 
+/* ─────────────────────────────────────────
+   Types
+────────────────────────────────────────── */
+type Processing = {
+  id?: number;
+  tenant_id: string;
+  animal_id: number;
+  tag: string;
+  status: string;                   // scheduled | in_transit | received | processed | picked_up | sold
+  sent_date: string;                // yyyy-mm-dd
+  processor?: string | null;
+  transport_id?: string | null;
+  live_weight_lb?: number | null;
+  hot_carcass_weight_lb?: number | null;
+  carcass_weight_lb?: number | null;
+  grade?: string | null;
+  yield_pct?: number | null;
+  lot_code?: string | null;
+  cut_sheet_url?: string | null;
+  invoice_url?: string | null;
+  notes?: string | null;
+};
+
 type Animal = {
   id?: number;
   tenant_id: string;
@@ -16,7 +39,7 @@ type Animal = {
   breed?: string | null;
   birth_date?: string | null; // yyyy-mm-dd
   current_paddock?: string | null;
-  status?: string | null; // active, sold, culled, dead
+  status?: string | null; // active, sold, culled, dead, processing
 };
 
 type Weight = {
@@ -38,6 +61,9 @@ type Treatment = {
   notes?: string | null;
 };
 
+/* ─────────────────────────────────────────
+   Supabase anon client (browser)
+────────────────────────────────────────── */
 const SUPABASE = {
   url: process.env.NEXT_PUBLIC_SUPABASE_URL || "",
   anon: process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || "",
@@ -48,7 +74,11 @@ if (typeof window !== "undefined" && SUPABASE.url.startsWith("http")) {
   supabase = createClient(SUPABASE.url, SUPABASE.anon);
 }
 
+/* ─────────────────────────────────────────
+   Component
+────────────────────────────────────────── */
 export default function CattleByTag({ tenantId }: { tenantId: string }) {
+  // Lists & editing
   const [search, setSearch] = useState("");
   const [animals, setAnimals] = useState<Animal[]>([]);
   const [editing, setEditing] = useState<Animal | null>(null);
@@ -56,7 +86,17 @@ export default function CattleByTag({ tenantId }: { tenantId: string }) {
   const [treats, setTreats] = useState<Treatment[]>([]);
   const [loading, setLoading] = useState(false);
 
-  // Scanner (uses native <input> to avoid ref typing issues)
+  // Processing state (✅ moved inside component)
+  const [processing, setProcessing] = useState<Processing[]>([]);
+  const [procDraft, setProcDraft] = useState<Partial<Processing>>({
+    sent_date: "",
+    processor: "",
+    transport_id: "",
+    live_weight_lb: undefined,
+    notes: "",
+  });
+
+  // Scanner (native input to avoid ref typing issues)
   const scanRef = useRef<HTMLInputElement>(null);
   const [scanValue, setScanValue] = useState("");
 
@@ -68,7 +108,7 @@ export default function CattleByTag({ tenantId }: { tenantId: string }) {
   const [from, setFrom] = useState<string>("");
   const [to, setTo] = useState<string>("");
 
-  // New animal draft (add cattle info)
+  // New animal form
   const [draft, setDraft] = useState<Animal>({
     tenant_id: tenantId,
     tag: "",
@@ -80,7 +120,9 @@ export default function CattleByTag({ tenantId }: { tenantId: string }) {
     status: "active",
   });
 
-  // Load list
+  /* ─────────────────────────────────────────
+     Data loads
+  ────────────────────────────────────────── */
   async function loadAnimals() {
     if (!supabase) return alert("Supabase not configured");
     setLoading(true);
@@ -97,7 +139,6 @@ export default function CattleByTag({ tenantId }: { tenantId: string }) {
     setAnimals((data || []) as Animal[]);
   }
 
-  // Load detail (weights/treatments) for selected animal
   async function loadDetail(animalId: number) {
     if (!supabase) return;
     const [ws, ts] = await Promise.all([
@@ -118,12 +159,30 @@ export default function CattleByTag({ tenantId }: { tenantId: string }) {
     setTreats((ts.data || []) as Treatment[]);
   }
 
+  // ✅ load processing (now inside component so tenantId is in scope)
+  async function loadProcessing(animalId: number) {
+    const res = await fetch("/api/cattle", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        action: "listProcessing",
+        tenant_id: tenantId,
+        animal_id: animalId,
+      }),
+    });
+    const json = await res.json();
+    if (!json.ok) throw new Error(json.error);
+    setProcessing(json.data || []);
+  }
+
   useEffect(() => {
     loadAnimals().catch(() => {});
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [tenantId]);
 
-  // Secure writes via API route (uses service role on server)
+  /* ─────────────────────────────────────────
+     Secure write helper (server route uses service role)
+  ────────────────────────────────────────── */
   async function api(action: string, body: any) {
     const res = await fetch("/api/cattle", {
       method: "POST",
@@ -135,7 +194,9 @@ export default function CattleByTag({ tenantId }: { tenantId: string }) {
     return json;
   }
 
-  // Add/Upsert animal (from draft form)
+  /* ─────────────────────────────────────────
+     Animal CRUD
+  ────────────────────────────────────────── */
   async function saveAnimal() {
     if (!draft.tag.trim()) return alert("Tag is required");
     const payload = {
@@ -162,7 +223,6 @@ export default function CattleByTag({ tenantId }: { tenantId: string }) {
     await loadAnimals();
   }
 
-  // Update existing animal (from edit panel)
   async function updateAnimal(a: Animal) {
     if (!a.id) return;
     const patch = {
@@ -177,7 +237,9 @@ export default function CattleByTag({ tenantId }: { tenantId: string }) {
     await loadAnimals();
   }
 
-  // Weight & Treatment adds
+  /* ─────────────────────────────────────────
+     Weight & Treatment
+  ────────────────────────────────────────── */
   async function addWeight(
     animalId: number,
     weigh_date: string,
@@ -214,84 +276,146 @@ export default function CattleByTag({ tenantId }: { tenantId: string }) {
     await loadDetail(animalId);
   }
 
-  // Open edit panel
+  /* ─────────────────────────────────────────
+     Processing workflow
+  ────────────────────────────────────────── */
   function startEdit(a: Animal) {
     setEditing(a);
     loadDetail(a.id!);
+    loadProcessing(a.id!);
   }
 
-  // CSV export
-  function exportCSV() {
-    const header = [
-      "tenant_id",
-      "tag",
-      "name",
-      "sex",
-      "breed",
-      "birth_date",
-      "current_paddock",
-      "status",
-    ];
-    const rows = animals.map((a) => [
-      tenantId,
-      a.tag ?? "",
-      a.name ?? "",
-      a.sex ?? "",
-      a.breed ?? "",
-      a.birth_date ?? "",
-      a.current_paddock ?? "",
-      a.status ?? "",
-    ]);
-    const csv = [header, ...rows]
-      .map((r) =>
-        r.map((x) => `"${String(x).replace(/"/g, '""')}"`).join(",")
-      )
-      .join("\n");
-    const blob = new Blob([csv], { type: "text/csv;charset=utf-8" });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement("a");
-    a.href = url;
-    a.download = `cattle_${tenantId}.csv`;
-    a.click();
-    URL.revokeObjectURL(url);
+  async function sendToProcessing() {
+    if (!editing) return;
+    if (!procDraft.sent_date) return alert("Sent date is required");
+
+    const payload = {
+      action: "sendToProcessing",
+      tenant_id: tenantId,
+      animal_id: editing.id,
+      tag: editing.tag,
+      sent_date: procDraft.sent_date,
+      processor: procDraft.processor || null,
+      transport_id: procDraft.transport_id || null,
+      live_weight_lb: procDraft.live_weight_lb
+        ? Number(procDraft.live_weight_lb)
+        : null,
+      notes: procDraft.notes || null,
+    };
+
+    const res = await fetch("/api/cattle", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+    });
+    const json = await res.json();
+    if (!json.ok) return alert(json.error);
+
+    setProcDraft({
+      sent_date: "",
+      processor: "",
+      transport_id: "",
+      live_weight_lb: undefined,
+      notes: "",
+    });
+    await Promise.all([loadAnimals(), loadProcessing(editing.id!)]);
   }
 
-  // CSV import
-  async function importCSV(file: File) {
-    const text = await file.text();
-    const lines = text.split(/\r?\n/).filter(Boolean);
-    if (lines.length < 2) return setImportMsg("Empty CSV");
-    const header = lines[0]
-      .split(",")
-      .map((h) => h.replace(/^"|"$/g, "").trim().toLowerCase());
-    const idx = (name: string) => header.indexOf(name);
-
-    const rows: any[] = [];
-    for (let i = 1; i < lines.length; i++) {
-      const cols =
-        lines[i]
-          .match(/("([^"]|"")*"|[^,]*)/g)
-          ?.map((c) => c.replace(/^"|"$/g, "").replace(/""/g, '"')) || [];
-      const get = (n: string) => cols[idx(n)] || "";
-      const tag = (get("tag") || "").trim();
-      if (!tag) continue;
-      rows.push({
+  async function updateProcessingRow(
+    row: Processing,
+    patch: Partial<Processing>
+  ) {
+    const res = await fetch("/api/cattle", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        action: "updateProcessing",
+        id: row.id,
         tenant_id: tenantId,
-        tag,
-        name: get("name") || null,
-        sex: (get("sex") || "").toUpperCase() || null,
-        breed: get("breed") || null,
-        birth_date: get("birth_date") || null,
-        current_paddock: get("current_paddock") || null,
-        status: get("status") || "active",
-      });
-    }
-    await api("bulkUpsertAnimals", { rows });
-    setImportMsg(`Imported ${rows.length} rows`);
-    await loadAnimals();
+        patch,
+      }),
+    });
+    const json = await res.json();
+    if (!json.ok) return alert(json.error);
+    if (editing?.id) await loadProcessing(editing.id);
+  }
+// ─────────────────────────────────────────────
+// CSV helpers (MUST be inside CattleByTag, above return)
+// ─────────────────────────────────────────────
+function exportCSV() {
+  const header = [
+    "tenant_id",
+    "tag",
+    "name",
+    "sex",
+    "breed",
+    "birth_date",
+    "current_paddock",
+    "status",
+  ];
+  const rows = animals.map((a) => [
+    tenantId,
+    a.tag ?? "",
+    a.name ?? "",
+    a.sex ?? "",
+    a.breed ?? "",
+    a.birth_date ?? "",
+    a.current_paddock ?? "",
+    a.status ?? "",
+  ]);
+  const csv = [header, ...rows]
+    .map((r) => r.map((x) => `"${String(x).replace(/"/g, '""')}"`).join(","))
+    .join("\n");
+
+  const blob = new Blob([csv], { type: "text/csv;charset=utf-8" });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = `cattle_${tenantId}.csv`;
+  a.click();
+  URL.revokeObjectURL(url);
+}
+
+async function importCSV(file: File) {
+  const text = await file.text();
+  const lines = text.split(/\r?\n/).filter(Boolean);
+  if (lines.length < 2) return setImportMsg("Empty CSV");
+
+  const header = lines[0]
+    .split(",")
+    .map((h) => h.replace(/^"|"$/g, "").trim().toLowerCase());
+  const idx = (name: string) => header.indexOf(name);
+
+  const rows: any[] = [];
+  for (let i = 1; i < lines.length; i++) {
+    const cols =
+      lines[i]
+        .match(/("([^"]|"")*"|[^,]*)/g)
+        ?.map((c) => c.replace(/^"|"$/g, "").replace(/""/g, '"')) || [];
+    const get = (n: string) => cols[idx(n)] || "";
+    const tag = (get("tag") || "").trim();
+    if (!tag) continue;
+
+    rows.push({
+      tenant_id: tenantId,
+      tag,
+      name: get("name") || null,
+      sex: (get("sex") || "").toUpperCase() || null,
+      breed: get("breed") || null,
+      birth_date: get("birth_date") || null,
+      current_paddock: get("current_paddock") || null,
+      status: get("status") || "active",
+    });
   }
 
-  // Scanner: most scanners type the code + Enter
+  await api("bulkUpsertAnimals", { rows });
+  setImportMsg(`Imported ${rows.length} rows`);
+  await loadAnimals();
+}
+
+  /* ─────────────────────────────────────────
+     Scanner & reports
+  ────────────────────────────────────────── */
   useEffect(() => {
     scanRef.current?.focus();
   }, [editing]);
@@ -309,7 +433,6 @@ export default function CattleByTag({ tenantId }: { tenantId: string }) {
     }
   }
 
-  // Reports
   const filteredWeights = useMemo(() => {
     let arr = weights;
     if (from) arr = arr.filter((w) => w.weigh_date >= from);
@@ -344,6 +467,9 @@ export default function CattleByTag({ tenantId }: { tenantId: string }) {
     }));
   }, [treats, from, to]);
 
+  /* ─────────────────────────────────────────
+     UI
+  ────────────────────────────────────────── */
   return (
     <Card>
       <CardHeader>
@@ -352,14 +478,16 @@ export default function CattleByTag({ tenantId }: { tenantId: string }) {
       <CardContent className="space-y-6">
         {/* Add / Search / CSV / Scan */}
         <div className="grid lg:grid-cols-3 gap-3">
-          {/* New Animal (add cattle info) */}
+          {/* New Animal */}
           <div className="border rounded-xl p-3 bg-white/70">
             <div className="grid grid-cols-2 gap-2">
               <div className="col-span-2">
                 <Label>Tag *</Label>
                 <Input
                   value={draft.tag}
-                  onChange={(e) => setDraft({ ...draft, tag: e.target.value })}
+                  onChange={(e) =>
+                    setDraft({ ...draft, tag: e.target.value })
+                  }
                   placeholder="e.g., BR123"
                 />
               </div>
@@ -367,7 +495,9 @@ export default function CattleByTag({ tenantId }: { tenantId: string }) {
                 <Label>Name</Label>
                 <Input
                   value={draft.name || ""}
-                  onChange={(e) => setDraft({ ...draft, name: e.target.value })}
+                  onChange={(e) =>
+                    setDraft({ ...draft, name: e.target.value })
+                  }
                 />
               </div>
               <div>
@@ -377,8 +507,7 @@ export default function CattleByTag({ tenantId }: { tenantId: string }) {
                   onChange={(e) =>
                     setDraft({
                       ...draft,
-                      sex:
-                        (e.target.value.toUpperCase() as any) || undefined,
+                      sex: (e.target.value.toUpperCase() as any) || undefined,
                     })
                   }
                   placeholder="M or F"
@@ -441,7 +570,11 @@ export default function CattleByTag({ tenantId }: { tenantId: string }) {
                     value={search}
                     onChange={(e) => setSearch(e.target.value)}
                   />
-                  <Button variant="outline" onClick={loadAnimals} disabled={loading}>
+                  <Button
+                    variant="outline"
+                    onClick={loadAnimals}
+                    disabled={loading}
+                  >
                     {loading ? "Loading…" : "Refresh"}
                   </Button>
                 </div>
@@ -474,10 +607,15 @@ export default function CattleByTag({ tenantId }: { tenantId: string }) {
                   if (f) importCSV(f);
                 }}
               />
-              <Button variant="outline" onClick={() => fileRef.current?.click()}>
+              <Button
+                variant="outline"
+                onClick={() => fileRef.current?.click()}
+              >
                 Import CSV
               </Button>
-              {importMsg && <span className="text-sm text-green-700">{importMsg}</span>}
+              {importMsg && (
+                <span className="text-sm text-green-700">{importMsg}</span>
+              )}
             </div>
 
             {/* List */}
@@ -506,7 +644,11 @@ export default function CattleByTag({ tenantId }: { tenantId: string }) {
                       <td className="p-2">{a.current_paddock}</td>
                       <td className="p-2">{a.status}</td>
                       <td className="p-2 text-right">
-                        <Button size="sm" variant="outline" onClick={() => startEdit(a)}>
+                        <Button
+                          size="sm"
+                          variant="outline"
+                          onClick={() => startEdit(a)}
+                        >
                           Open
                         </Button>
                       </td>
@@ -525,14 +667,18 @@ export default function CattleByTag({ tenantId }: { tenantId: string }) {
           </div>
         </div>
 
-        {/* Detail + Reports */}
+        {/* Detail + Reports + Processing */}
         {editing && (
           <div className="border rounded-xl p-4 bg-white/80">
             <div className="flex items-center justify-between mb-2">
               <div className="text-lg font-semibold">
                 Tag <span className="font-mono">{editing.tag}</span>
               </div>
-              <Button variant="outline" size="sm" onClick={() => setEditing(null)}>
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={() => setEditing(null)}
+              >
                 Close
               </Button>
             </div>
@@ -543,7 +689,9 @@ export default function CattleByTag({ tenantId }: { tenantId: string }) {
                 <Label>Name</Label>
                 <Input
                   value={editing.name || ""}
-                  onChange={(e) => setEditing({ ...editing, name: e.target.value })}
+                  onChange={(e) =>
+                    setEditing({ ...editing, name: e.target.value })
+                  }
                 />
               </div>
               <div>
@@ -563,7 +711,9 @@ export default function CattleByTag({ tenantId }: { tenantId: string }) {
                 <Label>Breed</Label>
                 <Input
                   value={editing.breed || ""}
-                  onChange={(e) => setEditing({ ...editing, breed: e.target.value })}
+                  onChange={(e) =>
+                    setEditing({ ...editing, breed: e.target.value })
+                  }
                 />
               </div>
               <div>
@@ -571,38 +721,56 @@ export default function CattleByTag({ tenantId }: { tenantId: string }) {
                 <Input
                   type="date"
                   value={editing.birth_date || ""}
-                  onChange={(e) => setEditing({ ...editing, birth_date: e.target.value })}
+                  onChange={(e) =>
+                    setEditing({ ...editing, birth_date: e.target.value })
+                  }
                 />
               </div>
               <div>
                 <Label>Paddock</Label>
                 <Input
                   value={editing.current_paddock || ""}
-                  onChange={(e) => setEditing({ ...editing, current_paddock: e.target.value })}
+                  onChange={(e) =>
+                    setEditing({ ...editing, current_paddock: e.target.value })
+                  }
                 />
               </div>
               <div>
                 <Label>Status</Label>
                 <Input
                   value={editing.status || ""}
-                  onChange={(e) => setEditing({ ...editing, status: e.target.value })}
+                  onChange={(e) =>
+                    setEditing({ ...editing, status: e.target.value })
+                  }
                 />
               </div>
               <div className="md:col-span-3">
-                <Button onClick={() => updateAnimal(editing!)}>Save Changes</Button>
+                <Button onClick={() => updateAnimal(editing!)}>
+                  Save Changes
+                </Button>
               </div>
             </div>
 
             {/* Weights */}
             <div className="mt-6">
               <div className="font-medium mb-2">Weights</div>
-              <WeightEditor tenantId={tenantId} animalId={editing.id!} onAdd={addWeight} weights={weights} />
+              <WeightEditor
+                tenantId={tenantId}
+                animalId={editing.id!}
+                onAdd={addWeight}
+                weights={weights}
+              />
             </div>
 
             {/* Treatments */}
             <div className="mt-6">
               <div className="font-medium mb-2">Treatments</div>
-              <TreatEditor tenantId={tenantId} animalId={editing.id!} onAdd={addTreatment} treats={treats} />
+              <TreatEditor
+                tenantId={tenantId}
+                animalId={editing.id!}
+                onAdd={addTreatment}
+                treats={treats}
+              />
             </div>
 
             {/* Reports */}
@@ -611,14 +779,22 @@ export default function CattleByTag({ tenantId }: { tenantId: string }) {
               <div className="grid md:grid-cols-3 gap-2 mb-3">
                 <div>
                   <Label>From</Label>
-                  <Input type="date" value={from} onChange={(e) => setFrom(e.target.value)} />
+                  <Input
+                    type="date"
+                    value={from}
+                    onChange={(e) => setFrom(e.target.value)}
+                  />
                 </div>
                 <div>
                   <Label>To</Label>
-                  <Input type="date" value={to} onChange={(e) => setTo(e.target.value)} />
+                  <Input
+                    type="date"
+                    value={to}
+                    onChange={(e) => setTo(e.target.value)}
+                  />
                 </div>
                 <div className="flex items-end">
-                  <Button variant="outline" onClick={() => { /* state triggers recalcs */ }}>
+                  <Button variant="outline" onClick={() => {}}>
                     Apply
                   </Button>
                 </div>
@@ -626,16 +802,21 @@ export default function CattleByTag({ tenantId }: { tenantId: string }) {
 
               <div className="grid md:grid-cols-2 gap-3">
                 <div className="border rounded-lg p-3 bg-white/60">
-                  <div className="font-semibold mb-1">Average Daily Gain (ADG)</div>
+                  <div className="font-semibold mb-1">
+                    Average Daily Gain (ADG)
+                  </div>
                   {adg !== null ? (
                     <div className="text-sm">
                       ADG: <b>{adg.toFixed(2)}</b> lb/day
                     </div>
                   ) : (
-                    <div className="text-sm">Not enough weight records in range.</div>
+                    <div className="text-sm">
+                      Not enough weight records in range.
+                    </div>
                   )}
                   <div className="text-xs text-slate-600 mt-1">
-                    ADG uses earliest and latest weights in the selected date range.
+                    ADG uses earliest and latest weights in the selected date
+                    range.
                   </div>
                 </div>
 
@@ -645,7 +826,9 @@ export default function CattleByTag({ tenantId }: { tenantId: string }) {
                     {treatmentSummary.length ? (
                       <ul className="list-disc ml-4">
                         {treatmentSummary.map((t) => (
-                          <li key={t.product}>{t.product}: {t.count}</li>
+                          <li key={t.product}>
+                            {t.product}: {t.count}
+                          </li>
                         ))}
                       </ul>
                     ) : (
@@ -655,6 +838,222 @@ export default function CattleByTag({ tenantId }: { tenantId: string }) {
                 </div>
               </div>
             </div>
+
+            {/* Processing */}
+            <div className="mt-6">
+              <div className="font-medium mb-2">Processing</div>
+
+              {/* Create new processing record */}
+              <div className="border rounded-lg p-3 bg-white/60 mb-3">
+                <div className="grid md:grid-cols-5 gap-2">
+                  <div>
+                    <Label>Sent Date *</Label>
+                    <Input
+                      type="date"
+                      value={procDraft.sent_date || ""}
+                      onChange={(e) =>
+                        setProcDraft({ ...procDraft, sent_date: e.target.value })
+                      }
+                    />
+                  </div>
+                  <div>
+                    <Label>Processor</Label>
+                    <Input
+                      value={procDraft.processor || ""}
+                      onChange={(e) =>
+                        setProcDraft({ ...procDraft, processor: e.target.value })
+                      }
+                    />
+                  </div>
+                  <div>
+                    <Label>Transport ID</Label>
+                    <Input
+                      value={procDraft.transport_id || ""}
+                      onChange={(e) =>
+                        setProcDraft({
+                          ...procDraft,
+                          transport_id: e.target.value,
+                        })
+                      }
+                    />
+                  </div>
+                  <div>
+                    <Label>Live Wt (lb)</Label>
+                    <Input
+                      type="number"
+                      value={(procDraft.live_weight_lb as any) || ""}
+                      onChange={(e) =>
+                        setProcDraft({
+                          ...procDraft,
+                          live_weight_lb: e.target.value
+                            ? Number(e.target.value)
+                            : undefined,
+                        })
+                      }
+                    />
+                  </div>
+                  <div className="md:col-span-5">
+                    <Label>Notes</Label>
+                    <Input
+                      value={procDraft.notes || ""}
+                      onChange={(e) =>
+                        setProcDraft({ ...procDraft, notes: e.target.value })
+                      }
+                    />
+                  </div>
+                  <div className="md:col-span-5">
+                    <Button onClick={sendToProcessing}>Send to Processing</Button>
+                  </div>
+                </div>
+              </div>
+
+              {/* Existing processing rows */}
+              <div className="overflow-auto border rounded">
+                <table className="w-full text-sm">
+                  <thead className="bg-slate-100">
+                    <tr>
+                      <th className="text-left p-2">Sent</th>
+                      <th className="text-left p-2">Status</th>
+                      <th className="text-left p-2">Processor</th>
+                      <th className="text-left p-2">Live</th>
+                      <th className="text-left p-2">HCW</th>
+                      <th className="text-left p-2">Carcass</th>
+                      <th className="text-left p-2">Yield%</th>
+                      <th className="text-left p-2">Grade</th>
+                      <th className="text-right p-2">Actions</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {processing.map((p) => (
+                      <tr key={p.id} className="border-t">
+                        <td className="p-2">{p.sent_date}</td>
+                        <td className="p-2">{p.status}</td>
+                        <td className="p-2">{p.processor}</td>
+                        <td className="p-2">{p.live_weight_lb ?? ""}</td>
+                        <td className="p-2">{p.hot_carcass_weight_lb ?? ""}</td>
+                        <td className="p-2">{p.carcass_weight_lb ?? ""}</td>
+                        <td className="p-2">
+                          {p.yield_pct ??
+                            (p.hot_carcass_weight_lb && p.live_weight_lb
+                              ? (
+                                  (Number(p.hot_carcass_weight_lb) /
+                                    Number(p.live_weight_lb)) *
+                                  100
+                                ).toFixed(1)
+                              : "")}
+                        </td>
+                        <td className="p-2">{p.grade ?? ""}</td>
+                        <td className="p-2 text-right">
+                          <div className="flex gap-2 justify-end">
+                            <Button
+                              size="sm"
+                              variant="outline"
+                              onClick={() =>
+                                updateProcessingRow(p, { status: "received" })
+                              }
+                            >
+                              Mark Received
+                            </Button>
+                            <Button
+                              size="sm"
+                              variant="outline"
+                              onClick={() =>
+                                updateProcessingRow(p, { status: "processed" })
+                              }
+                            >
+                              Mark Processed
+                            </Button>
+                          </div>
+
+                          {/* Inline editors */}
+                          <div className="mt-2 grid grid-cols-3 gap-2">
+                            <Input
+                              placeholder="HCW"
+                              type="number"
+                              value={p.hot_carcass_weight_lb ?? ""}
+                              onChange={(e) =>
+                                updateProcessingRow(p, {
+                                  hot_carcass_weight_lb: e.target.value
+                                    ? Number(e.target.value)
+                                    : null,
+                                })
+                              }
+                            />
+                            <Input
+                              placeholder="Carcass"
+                              type="number"
+                              value={p.carcass_weight_lb ?? ""}
+                              onChange={(e) =>
+                                updateProcessingRow(p, {
+                                  carcass_weight_lb: e.target.value
+                                    ? Number(e.target.value)
+                                    : null,
+                                })
+                              }
+                            />
+                            <Input
+                              placeholder="Grade"
+                              value={p.grade ?? ""}
+                              onChange={(e) =>
+                                updateProcessingRow(p, {
+                                  grade: e.target.value || null,
+                                })
+                              }
+                            />
+                            <Input
+                              placeholder="Yield %"
+                              type="number"
+                              value={p.yield_pct ?? ""}
+                              onChange={(e) =>
+                                updateProcessingRow(p, {
+                                  yield_pct: e.target.value
+                                    ? Number(e.target.value)
+                                    : null,
+                                })
+                              }
+                            />
+                            <Input
+                              placeholder="Lot"
+                              value={p.lot_code ?? ""}
+                              onChange={(e) =>
+                                updateProcessingRow(p, {
+                                  lot_code: e.target.value || null,
+                                })
+                              }
+                            />
+                            <Input
+                              placeholder="Cut Sheet URL"
+                              value={p.cut_sheet_url ?? ""}
+                              onChange={(e) =>
+                                updateProcessingRow(p, {
+                                  cut_sheet_url: e.target.value || null,
+                                })
+                              }
+                            />
+                            <Input
+                              placeholder="Invoice URL"
+                              value={p.invoice_url ?? ""}
+                              onChange={(e) =>
+                                updateProcessingRow(p, {
+                                  invoice_url: e.target.value || null,
+                                })
+                              }
+                            />
+                          </div>
+                        </td>
+                      </tr>
+                    ))}
+                    {processing.length === 0 && (
+                      <tr>
+                        <td className="p-2" colSpan={9}>
+                          No processing records yet.
+                        </td>
+                      </tr>
+                    )}
+                  </tbody>
+                </table>
+              </div>
+            </div>
           </div>
         )}
       </CardContent>
@@ -662,6 +1061,9 @@ export default function CattleByTag({ tenantId }: { tenantId: string }) {
   );
 }
 
+/* ─────────────────────────────────────────
+   Subcomponents
+────────────────────────────────────────── */
 function WeightEditor({
   tenantId,
   animalId,
@@ -670,7 +1072,12 @@ function WeightEditor({
 }: {
   tenantId: string;
   animalId: number;
-  onAdd: (animalId: number, date: string, weight: number, notes?: string) => Promise<void>;
+  onAdd: (
+    animalId: number,
+    date: string,
+    weight: number,
+    notes?: string
+  ) => Promise<void>;
   weights: Weight[];
 }) {
   const [date, setDate] = useState("");
@@ -682,18 +1089,31 @@ function WeightEditor({
       <div className="grid md:grid-cols-4 gap-2">
         <div>
           <Label>Date</Label>
-          <Input type="date" value={date} onChange={(e) => setDate(e.target.value)} />
+          <Input
+            type="date"
+            value={date}
+            onChange={(e) => setDate(e.target.value)}
+          />
         </div>
         <div>
           <Label>Weight (lb)</Label>
-          <Input type="number" value={w} onChange={(e) => setW(e.target.value)} placeholder="e.g., 1200" />
+          <Input
+            type="number"
+            value={w}
+            onChange={(e) => setW(e.target.value)}
+            placeholder="e.g., 1200"
+          />
         </div>
         <div className="md:col-span-2">
           <Label>Notes</Label>
           <Input value={notes} onChange={(e) => setNotes(e.target.value)} />
         </div>
         <div className="md:col-span-4">
-          <Button onClick={() => onAdd(animalId, date, Number(w || 0), notes || undefined)}>
+          <Button
+            onClick={() =>
+              onAdd(animalId, date, Number(w || 0), notes || undefined)
+            }
+          >
             Add Weight
           </Button>
         </div>
@@ -738,7 +1158,13 @@ function TreatEditor({
 }: {
   tenantId: string;
   animalId: number;
-  onAdd: (animalId: number, date: string, product?: string, dose?: string, notes?: string) => Promise<void>;
+  onAdd: (
+    animalId: number,
+    date: string,
+    product?: string,
+    dose?: string,
+    notes?: string
+  ) => Promise<void>;
   treats: Treatment[];
 }) {
   const [date, setDate] = useState("");
@@ -751,7 +1177,11 @@ function TreatEditor({
       <div className="grid md:grid-cols-5 gap-2">
         <div>
           <Label>Date</Label>
-          <Input type="date" value={date} onChange={(e) => setDate(e.target.value)} />
+          <Input
+            type="date"
+            value={date}
+            onChange={(e) => setDate(e.target.value)}
+          />
         </div>
         <div>
           <Label>Product</Label>

@@ -1,33 +1,34 @@
 "use client";
 
 import React, { useEffect, useMemo, useState } from "react";
-import CattleByTag from "@/components/CattleByTag";
 import { createClient, SupabaseClient } from "@supabase/supabase-js";
 import GrazingPlanner from "@/components/GrazingPlanner";
+import CareManager from "@/components/CareManager";
+import CattleByTag from "@/components/CattleByTag";
+import HealthProtocols from "@/components/HealthProtocols";
+import FeedingSchedules from "@/components/FeedingSchedules";
+import HealthMonitor from "@/components/HealthMonitor";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 
-// ────────────────────────────────────────────────
-// Supabase client (browser-safe)
-// ────────────────────────────────────────────────
+
+/* ───────── Supabase client (browser-safe) ───────── */
 const SUPABASE = {
   url: process.env.NEXT_PUBLIC_SUPABASE_URL || "",
   anon: process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || "",
 };
-
 let supabase: SupabaseClient | null = null;
 if (typeof window !== "undefined" && SUPABASE.url.startsWith("http")) {
   supabase = createClient(SUPABASE.url, SUPABASE.anon);
 }
 
-// Pick default tenant from env or current host
+/* pick default tenant from env or current host */
 function getDefaultTenant() {
   if (typeof window !== "undefined" && window.location?.hostname) {
     return process.env.NEXT_PUBLIC_TENANT || window.location.hostname;
   }
   return process.env.NEXT_PUBLIC_TENANT || "demo";
 }
-const [activeTab, setActiveTab] = useState<"planner"|"cattle">("planner");
 
 type BrandRow = {
   org_name?: string | null;
@@ -40,6 +41,8 @@ export default function AgriOps() {
   const [tenantId, setTenantId] = useState<string>(getDefaultTenant());
   const [brand, setBrand] = useState<BrandRow>({});
   const [loading, setLoading] = useState(false);
+  const [activeTab, setActiveTab] = useState<"planner" | "cattle" | "care">("planner");
+
 
   // Load brand data for current tenant (logo, name, colors)
   async function loadBrand() {
@@ -47,11 +50,8 @@ export default function AgriOps() {
     setLoading(true);
     const { data, error } = await supabase
       .from("agriops_brands")
-      // deterministic: if duplicates exist, take the newest row
-      .select("org_name,app_name,logo_url,accent,id")
+      .select("*")
       .eq("tenant_id", tenantId)
-      .order("id", { ascending: false })
-      .limit(1)
       .maybeSingle();
     setLoading(false);
     if (error) return alert(error.message);
@@ -73,48 +73,97 @@ export default function AgriOps() {
     () => brand.app_name || "AgriOps – Grazing & Feed Planner",
     [brand.app_name]
   );
+  const logoSrc = useMemo(
+    () => brand.logo_url || "/blackriver-logo.png",
+    [brand.logo_url]
+  );
+  const accent = brand.accent?.trim() || "";
 
-  // Prefer a real remote logo, ignore placeholders, fall back to /public asset
-  const logoSrc = useMemo(() => {
-    const remote = (brand.logo_url || "").trim();
-    if (!remote) return "/blackriver-logo.png";
-    // ignore common placeholder hosts
-    if (/(^|\.)placehold\.co/i.test(remote)) return "/blackriver-logo.png";
-    return remote;
-  }, [brand.logo_url]);
+  /* Utility: styles for selected/unselected pills */
+  function pillClasses(isActive: boolean) {
+    const active =
+      "text-white shadow-sm " + (accent ? "" : "bg-slate-900");
+    const inactive =
+      "bg-white text-slate-600 hover:text-slate-900 border border-slate-200";
+    return [
+      "px-4 py-2 rounded-full text-sm font-medium transition",
+      isActive ? active : inactive,
+      "focus:outline-none focus:ring-2 focus:ring-slate-900/10",
+    ].join(" ");
+  }
 
-  // Soft header background color (brand.accent or gentle default)
-  const headerBg = brand.accent && brand.accent.trim() !== "" ? brand.accent : "#dbece0";
+  const headerBg =
+    brand.accent && brand.accent.trim() !== "" ? brand.accent + "20" : "#f8fafc";
 
   return (
     <div className="min-h-screen bg-slate-50">
-      {/* ───────────────── Header with soft background & larger logo ───────────────── */}
-      <div className="w-full py-4 mb-6" style={{ backgroundColor: headerBg }}>
-        <div className="max-w-6xl mx-auto px-4">
-          {/* On mobile: stacked & centered; on md+: 3-column with centered logo, right controls */}
-          <div className="flex flex-col items-center gap-3 md:grid md:grid-cols-3 md:items-center">
-            {/* left spacer (keeps logo perfectly centered on md+) */}
+      {/* ───────────────── Header ───────────────── */}
+      <div
+        className="border-b bg-white/80 backdrop-blur sticky top-0 z-40"
+        style={{ backgroundColor: headerBg }}
+      >
+        <div className="max-w-6xl mx-auto px-4 py-6">
+          {/* Header grid: left spacer / center logo+tabs / right controls */}
+          <div className="grid md:grid-cols-3 items-center gap-3">
+            {/* left spacer for perfect center */}
             <div className="hidden md:block" />
 
-            {/* centered logo */}
-            <div className="justify-self-center">
+            {/* center: logo + pill tabs */}
+            <div className="justify-self-center text-center">
               <img
                 src={logoSrc}
                 alt={brand.org_name || "Black River"}
-                className="h-14 md:h-16 w-auto block mx-auto drop-shadow-sm"
+                className="h-12 w-auto mx-auto block"
               />
               <h1 className="sr-only">{appTitle}</h1>
+
+              {/* Pill tabs under logo */}
+              <nav
+                className="mt-4 inline-flex items-center gap-2 bg-slate-100 p-1 rounded-full"
+  role="tablist"
+  aria-label="Primary"
+              >
+                <button
+    type="button"
+    role="tab"
+    aria-selected={activeTab === "planner"}
+    className={pillClasses(activeTab === "planner")}
+    onClick={() => setActiveTab("planner")}
+                >
+                  Grazing Planner
+  </button>
+
+  <button
+    type="button"
+    role="tab"
+    aria-selected={activeTab === "cattle"}
+    className={pillClasses(activeTab === "cattle")}
+    onClick={() => setActiveTab("cattle")}
+                >
+                  Cattle by Tag
+                </button>
+
+                <button
+    type="button"
+    role="tab"
+    aria-selected={activeTab === "cattle"}
+    className={pillClasses(activeTab === "cattle")}
+    onClick={() => setActiveTab("cattle")}
+    ></button>
+
+    
+              </nav>
             </div>
 
-            {/* right controls */}
-            <div className="w-full md:w-auto md:justify-self-end">
+            {/* right: tenant controls */}
+            <div className="md:justify-self-end">
               <div className="flex flex-wrap gap-2 justify-center md:justify-end">
                 <Input
                   placeholder="Tenant ID (your domain)"
                   value={tenantId}
                   onChange={(e) => setTenantId(e.target.value)}
                   className="w-64"
-      />
+                />
                 <Button
                   variant="outline"
                   size="sm"
@@ -125,45 +174,21 @@ export default function AgriOps() {
                   {loading ? "Loading…" : "Load Brand"}
                 </Button>
               </div>
-              <div className="flex flex-wrap gap-2 justify-center md:justify-end">
-  {/* ...existing tenant input + Load Brand button... */}
-  <Button
-    variant={activeTab === "planner" ? "default" : "outline"}
-    size="sm"
-    onClick={() => setActiveTab("planner")}
-  >
-    Grazing Planner
-  </Button>
-  <Button
-    variant={activeTab === "cattle" ? "default" : "outline"}
-    size="sm"
-    onClick={() => setActiveTab("cattle")}
-  >
-    Cattle by Tag
-  </Button>
-</div>
             </div>
           </div>
         </div>
       </div>
 
-      {/* ───────────────── Centered page container ───────────────── */}
-      <div className="max-w-6xl mx-auto px-4 pb-8">
-        {/* Main layout */}
+      {/* ───────────────── Main content ───────────────── */}
+      <div className="max-w-6xl mx-auto px-4 py-6">
         <div className="grid md:grid-cols-2 gap-6">
-          {/* Left column: core tools */}
-          <div className="space-y-6">
-            <GrazingPlanner tenantId={tenantId} />
-             {activeTab === "cattle" && (
-      <CattleByTag tenantId={tenantId} />          
-      </div>
-
-          {/* Right column: reserved for future (Reports, Inventory, Ads, etc.) */}
-          <div className="space-y-6">{/* Future modules go here */}</div>
-        </div>
-      </div><div className="space-y-6">
-    <CattleByTag tenantId={tenantId} />
+          <div className="space-y-6 md:col-span-2" role="tabpanel">
+  {activeTab === "planner" && <GrazingPlanner tenantId={tenantId} />}
+  {activeTab === "cattle" && <CattleByTag tenantId={tenantId} />}
+  {activeTab === "care" && <CareManager tenantId={tenantId} />}
 </div>
+        </div>
+      </div>
     </div>
   );
 }
