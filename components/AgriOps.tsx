@@ -3,14 +3,10 @@
 import React, { useEffect, useMemo, useState } from "react";
 import { createClient, SupabaseClient } from "@supabase/supabase-js";
 import GrazingPlanner from "@/components/GrazingPlanner";
-import CareManager from "@/components/CareManager";
 import CattleByTag from "@/components/CattleByTag";
-import HealthProtocols from "@/components/HealthProtocols";
-import FeedingSchedules from "@/components/FeedingSchedules";
-import HealthMonitor from "@/components/HealthMonitor";
+import CareManager from "@/components/CareManager"; // ⬅️ NEW
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-
 
 /* ───────── Supabase client (browser-safe) ───────── */
 const SUPABASE = {
@@ -41,8 +37,7 @@ export default function AgriOps() {
   const [tenantId, setTenantId] = useState<string>(getDefaultTenant());
   const [brand, setBrand] = useState<BrandRow>({});
   const [loading, setLoading] = useState(false);
-  const [activeTab, setActiveTab] = useState<"planner" | "cattle" | "care">("planner");
-
+  const [activeTab, setActiveTab] = useState<"planner" | "cattle" | "care">("planner"); // ⬅️ UPDATED
 
   // Load brand data for current tenant (logo, name, colors)
   async function loadBrand() {
@@ -120,38 +115,53 @@ export default function AgriOps() {
               {/* Pill tabs under logo */}
               <nav
                 className="mt-4 inline-flex items-center gap-2 bg-slate-100 p-1 rounded-full"
-  role="tablist"
-  aria-label="Primary"
+                role="tablist"
+                aria-label="Primary"
               >
                 <button
-    type="button"
-    role="tab"
-    aria-selected={activeTab === "planner"}
-    className={pillClasses(activeTab === "planner")}
-    onClick={() => setActiveTab("planner")}
+                  type="button"
+                  role="tab"
+                  aria-selected={activeTab === "planner"}
+                  className={pillClasses(activeTab === "planner")}
+                  style={
+                    activeTab === "planner" && accent
+                      ? { backgroundColor: accent }
+                      : undefined
+                  }
+                  onClick={() => setActiveTab("planner")}
                 >
                   Grazing Planner
-  </button>
+                </button>
 
-  <button
-    type="button"
-    role="tab"
-    aria-selected={activeTab === "cattle"}
-    className={pillClasses(activeTab === "cattle")}
-    onClick={() => setActiveTab("cattle")}
+                <button
+                  type="button"
+                  role="tab"
+                  aria-selected={activeTab === "cattle"}
+                  className={pillClasses(activeTab === "cattle")}
+                  style={
+                    activeTab === "cattle" && accent
+                      ? { backgroundColor: accent }
+                      : undefined
+                  }
+                  onClick={() => setActiveTab("cattle")}
                 >
                   Cattle by Tag
                 </button>
 
                 <button
-    type="button"
-    role="tab"
-    aria-selected={activeTab === "cattle"}
-    className={pillClasses(activeTab === "cattle")}
-    onClick={() => setActiveTab("cattle")}
-    ></button>
-
-    
+                  type="button"
+                  role="tab"
+                  aria-selected={activeTab === "care"}
+                  className={pillClasses(activeTab === "care")}
+                  style={
+                    activeTab === "care" && accent
+                      ? { backgroundColor: accent }
+                      : undefined
+                  }
+                  onClick={() => setActiveTab("care")}
+                >
+                  Care & Health
+                </button>
               </nav>
             </div>
 
@@ -183,10 +193,10 @@ export default function AgriOps() {
       <div className="max-w-6xl mx-auto px-4 py-6">
         <div className="grid md:grid-cols-2 gap-6">
           <div className="space-y-6 md:col-span-2" role="tabpanel">
-  {activeTab === "planner" && <GrazingPlanner tenantId={tenantId} />}
-  {activeTab === "cattle" && <CattleByTag tenantId={tenantId} />}
-  {activeTab === "care" && <CareManager tenantId={tenantId} />}
-</div>
+            {activeTab === "planner" && <GrazingPlanner tenantId={tenantId} />}
+            {activeTab === "cattle" && <CattleByTag tenantId={tenantId} />}
+            {activeTab === "care" && <CareManager tenantId={tenantId} />}
+          </div>
         </div>
       </div>
     </div>
