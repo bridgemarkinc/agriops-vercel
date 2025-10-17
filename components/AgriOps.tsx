@@ -93,101 +93,65 @@ export default function AgriOps() {
   return (
     <div className="min-h-screen bg-slate-50">
       {/* ───────────────── Header ───────────────── */}
-      <div
-        className="border-b bg-white/80 backdrop-blur sticky top-0 z-40"
-        style={{ backgroundColor: headerBg }}
-      >
-        <div className="max-w-6xl mx-auto px-4 py-6">
-          {/* Header grid: left spacer / center logo+tabs / right controls */}
-          <div className="grid md:grid-cols-3 items-center gap-3">
-            {/* left spacer for perfect center */}
-            <div className="hidden md:block" />
-
-            {/* center: logo + pill tabs */}
-            <div className="justify-self-center text-center">
-              <img
-                src={logoSrc}
-                alt={brand.org_name || "Black River"}
-                className="h-12 w-auto mx-auto block"
-              />
-              <h1 className="sr-only">{appTitle}</h1>
-
-              {/* Pill tabs under logo */}
-              <nav
-                className="mt-4 inline-flex items-center gap-2 bg-slate-100 p-1 rounded-full"
-                role="tablist"
-                aria-label="Primary"
-              >
-                <button
-                  type="button"
-                  role="tab"
-                  aria-selected={activeTab === "planner"}
-                  className={pillClasses(activeTab === "planner")}
-                  style={
-                    activeTab === "planner" && accent
-                      ? { backgroundColor: accent }
-                      : undefined
-                  }
-                  onClick={() => setActiveTab("planner")}
-                >
-                  Grazing Planner
-                </button>
-
-                <button
-                  type="button"
-                  role="tab"
-                  aria-selected={activeTab === "cattle"}
-                  className={pillClasses(activeTab === "cattle")}
-                  style={
-                    activeTab === "cattle" && accent
-                      ? { backgroundColor: accent }
-                      : undefined
-                  }
-                  onClick={() => setActiveTab("cattle")}
-                >
-                  Cattle by Tag
-                </button>
-
-                <button
-                  type="button"
-                  role="tab"
-                  aria-selected={activeTab === "care"}
-                  className={pillClasses(activeTab === "care")}
-                  style={
-                    activeTab === "care" && accent
-                      ? { backgroundColor: accent }
-                      : undefined
-                  }
-                  onClick={() => setActiveTab("care")}
-                >
-                  Care & Health
-                </button>
-              </nav>
-            </div>
-
-            {/* right: tenant controls */}
-            <div className="md:justify-self-end">
-              <div className="flex flex-wrap gap-2 justify-center md:justify-end">
-                <Input
-                  placeholder="Tenant ID (your domain)"
-                  value={tenantId}
-                  onChange={(e) => setTenantId(e.target.value)}
-                  className="w-64"
-                />
-                <Button
-                  variant="outline"
-                  size="sm"
-                  onClick={loadBrand}
-                  disabled={loading}
-                  title="Load branding for this tenant"
-                >
-                  {loading ? "Loading…" : "Load Brand"}
-                </Button>
-              </div>
-            </div>
-          </div>
+      {/* Header */}
+<div className="border-b bg-white/90 backdrop-blur-sm">
+  <div className="max-w-6xl mx-auto px-4 py-6">
+    <div className="flex flex-col md:flex-row md:items-center md:justify-between gap-4">
+      {/* Left-aligned logo */}
+      <div className="flex items-center space-x-3">
+        <img
+          src={logoSrc}
+          alt={brand.org_name || "Black River"}
+          className="h-16 w-auto"
+        />
+        <div>
+          <h1 className="text-xl font-semibold text-slate-800 leading-tight">
+            {brand.app_name || "AgriOps – Grazing & Feed Planner"}
+          </h1>
+          {brand.org_name && (
+            <p className="text-sm text-slate-500">{brand.org_name}</p>
+          )}
         </div>
       </div>
+
+      {/* Pill-style navigation */}
+      <nav
+        className="flex flex-wrap justify-start md:justify-end gap-2 bg-slate-100 p-1 rounded-full shadow-inner"
+        role="tablist"
+        aria-label="Primary Navigation"
+      >
+        <button
+          type="button"
+          role="tab"
+          aria-selected={activeTab === "planner"}
+          className={pillClasses(activeTab === "planner")}
+          onClick={() => setActiveTab("planner")}
+        >
+          Grazing Planner
+        </button>
+        <button
+          type="button"
+          role="tab"
+          aria-selected={activeTab === "cattle"}
+          className={pillClasses(activeTab === "cattle")}
+          onClick={() => setActiveTab("cattle")}
+        >
+          Cattle by Tag
+        </button>
+        <button
+          type="button"
+          role="tab"
+          aria-selected={activeTab === "care"}
+          className={pillClasses(activeTab === "care")}
+          onClick={() => setActiveTab("care")}
+        >
+          Care & Health
+        </button>
+      </nav>
+    </div>
+  </div>
+</div>
+
 
       {/* ───────────────── Main content ───────────────── */}
       <div className="max-w-6xl mx-auto px-4 py-6">
