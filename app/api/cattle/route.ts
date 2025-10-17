@@ -79,8 +79,52 @@ export async function POST(req: NextRequest) {
         .upsert(rows, { onConflict: "tenant_id,tag" } as any);
       if (error) throw error;
       return NextResponse.json({ ok: true, count: rows.length });
+    }  if (action === "sendToProcessing") {
+      const {
+        tenant_id, animal_id, tag,
+        sent_date, processor, transport_id, live_weight_lb, notes
+      } = body;
+
+      const { error } = await admin.from("agriops_cattle_processing").insert({
+        tenant_id, animal_id, tag, sent_date, processor, transport_id, live_weight_lb, notes,
+        status: "scheduled"
+      });
+      if (error) throw error;
+if (animal_id) {
+        const { error: e2 } = await admin
+          .from("agriops_cattle")
+          .update({ status: "processing" })
+          .eq("id", animal_id)
+          .eq("tenant_id", tenant_id);
+        if (e2) throw e2;
+      }
+      return NextResponse.json({ ok: true });
     }
 
+    // NEW: update processing details (weights, grading, status transitions)
+    if (action === "updateProcessing") {
+      const { id, tenant_id, patch } = body as {
+        id: number; tenant_id: string; patch: Record<string, any>;
+      };
+      const { error } = await admin
+        .from("agriops_cattle_processing")
+        .update({ ...patch, updated_at: new Date().toISOString() })
+        .eq("id", id)
+        .eq("tenant_id", tenant_id);
+      if (error) throw error;
+      return NextResponse.json({ ok: true });
+    }
+    if (action === "listProcessing") {
+      const { tenant_id, animal_id } = body;
+      const { data, error } = await admin
+        .from("agriops_cattle_processing")
+        .select("*")
+        .eq("tenant_id", tenant_id)
+        .eq("animal_id", animal_id)
+        .order("sent_date", { ascending: false });
+      if (error) throw error;
+      return NextResponse.json({ ok: true, data });
+    }
     // Default handler
     return NextResponse.json(
       { ok: false, error: "Unknown action" },

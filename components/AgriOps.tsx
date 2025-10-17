@@ -27,6 +27,7 @@ function getDefaultTenant() {
   }
   return process.env.NEXT_PUBLIC_TENANT || "demo";
 }
+const [activeTab, setActiveTab] = useState<"planner"|"cattle">("planner");
 
 type BrandRow = {
   org_name?: string | null;
@@ -113,7 +114,7 @@ export default function AgriOps() {
                   value={tenantId}
                   onChange={(e) => setTenantId(e.target.value)}
                   className="w-64"
-                />
+      />
                 <Button
                   variant="outline"
                   size="sm"
@@ -124,6 +125,23 @@ export default function AgriOps() {
                   {loading ? "Loading…" : "Load Brand"}
                 </Button>
               </div>
+              <div className="flex flex-wrap gap-2 justify-center md:justify-end">
+  {/* ...existing tenant input + Load Brand button... */}
+  <Button
+    variant={activeTab === "planner" ? "default" : "outline"}
+    size="sm"
+    onClick={() => setActiveTab("planner")}
+  >
+    Grazing Planner
+  </Button>
+  <Button
+    variant={activeTab === "cattle" ? "default" : "outline"}
+    size="sm"
+    onClick={() => setActiveTab("cattle")}
+  >
+    Cattle by Tag
+  </Button>
+</div>
             </div>
           </div>
         </div>
@@ -136,7 +154,9 @@ export default function AgriOps() {
           {/* Left column: core tools */}
           <div className="space-y-6">
             <GrazingPlanner tenantId={tenantId} />
-          </div>
+             {activeTab === "cattle" && (
+      <CattleByTag tenantId={tenantId} />          
+      </div>
 
           {/* Right column: reserved for future (Reports, Inventory, Ads, etc.) */}
           <div className="space-y-6">{/* Future modules go here */}</div>
