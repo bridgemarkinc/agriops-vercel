@@ -6,30 +6,19 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import jsPDF from "jspdf";
 
-/* ─────────────────────────────────────────
-   Types
-────────────────────────────────────────── */
-type Processing = {
-  id?: number;
-  tenant_id: string;
-  animal_id: number;
-  tag: string;
-  status: string;                   // scheduled | in_transit | received | processed | picked_up | sold
-  sent_date: string;                // yyyy-mm-dd
-  processor?: string | null;
-  transport_id?: string | null;
-  live_weight_lb?: number | null;
-  hot_carcass_weight_lb?: number | null;
-  carcass_weight_lb?: number | null;
-  grade?: string | null;
-  yield_pct?: number | null;
-  lot_code?: string | null;
-  cut_sheet_url?: string | null;
-  invoice_url?: string | null;
-  notes?: string | null;
+/* ───────────────────────── Supabase (browser) ───────────────────────── */
+const SUPABASE = {
+  url: process.env.NEXT_PUBLIC_SUPABASE_URL || "",
+  anon: process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || "",
 };
+let supabase: SupabaseClient | null = null;
+if (typeof window !== "undefined" && SUPABASE.url.startsWith("http")) {
+  supabase = createClient(SUPABASE.url, SUPABASE.anon);
+}
 
+/* ───────────────────────── Types ───────────────────────── */
 type Animal = {
   id?: number;
   tenant_id: string;
@@ -37,9 +26,10 @@ type Animal = {
   name?: string | null;
   sex?: "M" | "F" | null;
   breed?: string | null;
-  birth_date?: string | null; // yyyy-mm-dd
+  birth_date?: string | null;
   current_paddock?: string | null;
-  status?: string | null; // active, sold, culled, dead, processing
+  status?: string | null; // active, sold, culled, dead, processing, etc.
+  primary_photo_url?: string | null;
 };
 
 type Weight = {
@@ -61,54 +51,54 @@ type Treatment = {
   notes?: string | null;
 };
 
-/* ─────────────────────────────────────────
-   Supabase anon client (browser)
-────────────────────────────────────────── */
-const SUPABASE = {
-  url: process.env.NEXT_PUBLIC_SUPABASE_URL || "",
-  anon: process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || "",
+type Processing = {
+  id?: number;
+  tenant_id: string;
+  animal_id: number;
+  tag: string;
+  status: string;
+  sent_date: string;
+  processor?: string | null;
+  transport_id?: string | null;
+  live_weight_lb?: number | null;
+  hot_carcass_weight_lb?: number | null;
+  carcass_weight_lb?: number | null;
+  grade?: string | null;
+  yield_pct?: number | null;
+  lot_code?: string | null;
+  cut_sheet_url?: string | null;
+  invoice_url?: string | null;
+  notes?: string | null;
 };
 
-let supabase: SupabaseClient | null = null;
-if (typeof window !== "undefined" && SUPABASE.url.startsWith("http")) {
-  supabase = createClient(SUPABASE.url, SUPABASE.anon);
-}
+type PhotoRow = {
+  id: number;
+  tenant_id: string;
+  animal_id: number;
+  tag: string;
+  photo_url: string;
+  photo_path: string;
+  is_primary: boolean;
+  created_at: string;
+  sort_order?: number;
+};
 
-/* ─────────────────────────────────────────
-   Component
-────────────────────────────────────────── */
+/* ───────────────────────── Component ───────────────────────── */
 export default function CattleByTag({ tenantId }: { tenantId: string }) {
-  // Lists & editing
+  /* List/search */
   const [search, setSearch] = useState("");
   const [animals, setAnimals] = useState<Animal[]>([]);
+  const [loading, setLoading] = useState(false);
+
+  /* Edit detail */
   const [editing, setEditing] = useState<Animal | null>(null);
   const [weights, setWeights] = useState<Weight[]>([]);
   const [treats, setTreats] = useState<Treatment[]>([]);
-  const [loading, setLoading] = useState(false);
-
-  // Processing state (✅ moved inside component)
   const [processing, setProcessing] = useState<Processing[]>([]);
-  const [procDraft, setProcDraft] = useState<Partial<Processing>>({
-    sent_date: "",
-    processor: "",
-    transport_id: "",
-    live_weight_lb: undefined,
-    notes: "",
-  });
+  const [photos, setPhotos] = useState<PhotoRow[]>([]);
+  const [uploading, setUploading] = useState(false);
 
-  // Scanner (native input to avoid ref typing issues)
-  const scanRef = useRef<HTMLInputElement>(null);
-  const [scanValue, setScanValue] = useState("");
-
-  // CSV import
-  const fileRef = useRef<HTMLInputElement>(null);
-  const [importMsg, setImportMsg] = useState<string | null>(null);
-
-  // Reports date range
-  const [from, setFrom] = useState<string>("");
-  const [to, setTo] = useState<string>("");
-
-  // New animal form
+  /* New animal draft */
   const [draft, setDraft] = useState<Animal>({
     tenant_id: tenantId,
     tag: "",
@@ -120,9 +110,45 @@ export default function CattleByTag({ tenantId }: { tenantId: string }) {
     status: "active",
   });
 
-  /* ─────────────────────────────────────────
-     Data loads
-  ────────────────────────────────────────── */
+  /* Scanner */
+  const scanRef = useRef<HTMLInputElement>(null);
+  const [scanValue, setScanValue] = useState("");
+
+  /* CSV import/export */
+  const fileRef = useRef<HTMLInputElement>(null);
+  const [importMsg, setImportMsg] = useState<string | null>(null);
+  const [importBusy, setImportBusy] = useState(false);
+
+  /* Reports date range */
+  const [from, setFrom] = useState<string>("");
+  const [to, setTo] = useState<string>("");
+
+  /* Processing draft */
+  const [procDraft, setProcDraft] = useState<Partial<Processing>>({
+    sent_date: "",
+    processor: "",
+    transport_id: "",
+    live_weight_lb: undefined,
+    notes: "",
+  });
+
+  /* Gallery: drag & favorite for PDF */
+  const [dragIndex, setDragIndex] = useState<number | null>(null);
+  const [favForPdf, setFavForPdf] = useState<number | "primary" | null>("primary");
+
+  /* Helpers */
+  async function api(action: string, body: any) {
+    const res = await fetch("/api/cattle", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ action, ...body }),
+    });
+    const json = await res.json();
+    if (!res.ok || !json.ok) throw new Error(json.error || "Request failed");
+    return json.data;
+  }
+
+  /* Loaders */
   async function loadAnimals() {
     if (!supabase) return alert("Supabase not configured");
     setLoading(true);
@@ -159,20 +185,23 @@ export default function CattleByTag({ tenantId }: { tenantId: string }) {
     setTreats((ts.data || []) as Treatment[]);
   }
 
-  // ✅ load processing (now inside component so tenantId is in scope)
   async function loadProcessing(animalId: number) {
-    const res = await fetch("/api/cattle", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        action: "listProcessing",
-        tenant_id: tenantId,
-        animal_id: animalId,
-      }),
-    });
-    const json = await res.json();
-    if (!json.ok) throw new Error(json.error);
-    setProcessing(json.data || []);
+    const data = await api("listProcessing", { tenant_id: tenantId, animal_id: animalId });
+    setProcessing((data || []) as Processing[]);
+  }
+
+  async function loadPhotos(animalId: number) {
+    const data = await api("listAnimalPhotos", { tenant_id: tenantId, animal_id: animalId });
+    setPhotos((data || []) as PhotoRow[]);
+  }
+
+  function startEdit(a: Animal) {
+    setEditing(a);
+    if (a.id) {
+      loadDetail(a.id);
+      loadProcessing(a.id);
+      loadPhotos(a.id);
+    }
   }
 
   useEffect(() => {
@@ -180,30 +209,18 @@ export default function CattleByTag({ tenantId }: { tenantId: string }) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [tenantId]);
 
-  /* ─────────────────────────────────────────
-     Secure write helper (server route uses service role)
-  ────────────────────────────────────────── */
-  async function api(action: string, body: any) {
-    const res = await fetch("/api/cattle", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ action, ...body }),
-    });
-    const json = await res.json();
-    if (!res.ok || !json.ok) throw new Error(json.error || "Request failed");
-    return json;
-  }
+  useEffect(() => {
+    scanRef.current?.focus();
+  }, [editing]);
 
-  /* ─────────────────────────────────────────
-     Animal CRUD
-  ────────────────────────────────────────── */
+  /* CRUD: animals */
   async function saveAnimal() {
     if (!draft.tag.trim()) return alert("Tag is required");
     const payload = {
       tenant_id: tenantId,
       tag: draft.tag.trim(),
       name: draft.name || null,
-      sex: draft.sex ? draft.sex.toUpperCase() : null,
+      sex: draft.sex ? (draft.sex.toUpperCase() as "M" | "F") : null,
       breed: draft.breed || null,
       birth_date: draft.birth_date || null,
       current_paddock: draft.current_paddock || null,
@@ -237,9 +254,7 @@ export default function CattleByTag({ tenantId }: { tenantId: string }) {
     await loadAnimals();
   }
 
-  /* ─────────────────────────────────────────
-     Weight & Treatment
-  ────────────────────────────────────────── */
+  /* Weights & treatments */
   async function addWeight(
     animalId: number,
     weigh_date: string,
@@ -276,163 +291,252 @@ export default function CattleByTag({ tenantId }: { tenantId: string }) {
     await loadDetail(animalId);
   }
 
-  /* ─────────────────────────────────────────
-     Processing workflow
-  ────────────────────────────────────────── */
-  function startEdit(a: Animal) {
-    setEditing(a);
-    loadDetail(a.id!);
-    loadProcessing(a.id!);
-  }
-
+  /* Processing */
   async function sendToProcessing() {
-    if (!editing) return;
+    if (!editing?.id) return;
     if (!procDraft.sent_date) return alert("Sent date is required");
-
-    const payload = {
-      action: "sendToProcessing",
+    await api("sendToProcessing", {
       tenant_id: tenantId,
       animal_id: editing.id,
       tag: editing.tag,
       sent_date: procDraft.sent_date,
       processor: procDraft.processor || null,
       transport_id: procDraft.transport_id || null,
-      live_weight_lb: procDraft.live_weight_lb
-        ? Number(procDraft.live_weight_lb)
-        : null,
+      live_weight_lb: procDraft.live_weight_lb ? Number(procDraft.live_weight_lb) : null,
       notes: procDraft.notes || null,
-    };
-
-    const res = await fetch("/api/cattle", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(payload),
     });
-    const json = await res.json();
-    if (!json.ok) return alert(json.error);
-
-    setProcDraft({
-      sent_date: "",
-      processor: "",
-      transport_id: "",
-      live_weight_lb: undefined,
-      notes: "",
-    });
-    await Promise.all([loadAnimals(), loadProcessing(editing.id!)]);
+    setProcDraft({ sent_date: "", processor: "", transport_id: "", live_weight_lb: undefined, notes: "" });
+    await Promise.all([loadAnimals(), loadProcessing(editing.id)]);
   }
 
-  async function updateProcessingRow(
-    row: Processing,
-    patch: Partial<Processing>
-  ) {
-    const res = await fetch("/api/cattle", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        action: "updateProcessing",
-        id: row.id,
-        tenant_id: tenantId,
-        patch,
-      }),
-    });
-    const json = await res.json();
-    if (!json.ok) return alert(json.error);
+  async function updateProcessingRow(row: Processing, patch: Partial<Processing>) {
+    await api("updateProcessing", { id: row.id, tenant_id: tenantId, patch });
     if (editing?.id) await loadProcessing(editing.id);
   }
-// ─────────────────────────────────────────────
-// CSV helpers (MUST be inside CattleByTag, above return)
-// ─────────────────────────────────────────────
-function exportCSV() {
-  const header = [
-    "tenant_id",
-    "tag",
-    "name",
-    "sex",
-    "breed",
-    "birth_date",
-    "current_paddock",
-    "status",
-  ];
-  const rows = animals.map((a) => [
-    tenantId,
-    a.tag ?? "",
-    a.name ?? "",
-    a.sex ?? "",
-    a.breed ?? "",
-    a.birth_date ?? "",
-    a.current_paddock ?? "",
-    a.status ?? "",
-  ]);
-  const csv = [header, ...rows]
-    .map((r) => r.map((x) => `"${String(x).replace(/"/g, '""')}"`).join(","))
-    .join("\n");
 
-  const blob = new Blob([csv], { type: "text/csv;charset=utf-8" });
-  const url = URL.createObjectURL(blob);
-  const a = document.createElement("a");
-  a.href = url;
-  a.download = `cattle_${tenantId}.csv`;
-  a.click();
-  URL.revokeObjectURL(url);
-}
+  /* Photos */
+  async function uploadPhotos(files: FileList) {
+    try {
+      if (!supabase || !editing?.id) return;
+      setUploading(true);
 
-async function importCSV(file: File) {
-  const text = await file.text();
-  const lines = text.split(/\r?\n/).filter(Boolean);
-  if (lines.length < 2) return setImportMsg("Empty CSV");
+      for (const file of Array.from(files)) {
+        const safeTag = (editing.tag || `id-${editing.id}`).replace(/[^a-z0-9_-]/gi, "_");
+        const ext = (file.name.split(".").pop() || "jpg").toLowerCase();
+        const path = `${tenantId}/${safeTag}/${Date.now()}_${Math.random().toString(36).slice(2)}.${ext}`;
 
-  const header = lines[0]
-    .split(",")
-    .map((h) => h.replace(/^"|"$/g, "").trim().toLowerCase());
-  const idx = (name: string) => header.indexOf(name);
+        const { error: upErr } = await supabase.storage
+          .from("cattle-photos")
+          .upload(path, file, { upsert: true });
+        if (upErr) throw upErr;
 
-  const rows: any[] = [];
-  for (let i = 1; i < lines.length; i++) {
-    const cols =
-      lines[i]
-        .match(/("([^"]|"")*"|[^,]*)/g)
-        ?.map((c) => c.replace(/^"|"$/g, "").replace(/""/g, '"')) || [];
-    const get = (n: string) => cols[idx(n)] || "";
-    const tag = (get("tag") || "").trim();
-    if (!tag) continue;
+        const { data: pub } = supabase.storage.from("cattle-photos").getPublicUrl(path);
+        const photo_url = pub?.publicUrl;
 
-    rows.push({
-      tenant_id: tenantId,
-      tag,
-      name: get("name") || null,
-      sex: (get("sex") || "").toUpperCase() || null,
-      breed: get("breed") || null,
-      birth_date: get("birth_date") || null,
-      current_paddock: get("current_paddock") || null,
-      status: get("status") || "active",
-    });
+        await api("addAnimalPhoto", {
+          tenant_id: tenantId,
+          animal_id: editing.id,
+          tag: editing.tag,
+          photo_url,
+          photo_path: path,
+          set_primary: photos.length === 0, // first becomes primary
+        });
+      }
+
+      await loadPhotos(editing.id);
+      await loadAnimals(); // primary thumb might change
+    } catch (e: any) {
+      console.error(e);
+      alert(`Upload failed: ${e.message || e}`);
+    } finally {
+      setUploading(false);
+    }
   }
 
-  await api("bulkUpsertAnimals", { rows });
-  setImportMsg(`Imported ${rows.length} rows`);
-  await loadAnimals();
-}
+  async function setPrimaryPhoto(id: number, url: string) {
+    if (!editing?.id) return;
+    await api("setPrimaryPhoto", { tenant_id: tenantId, animal_id: editing.id, id });
+    await loadPhotos(editing.id);
+    await loadAnimals();
+    setEditing((prev) => (prev ? { ...prev, primary_photo_url: url } : prev));
+  }
 
-  /* ─────────────────────────────────────────
-     Scanner & reports
-  ────────────────────────────────────────── */
-  useEffect(() => {
-    scanRef.current?.focus();
-  }, [editing]);
+  async function deletePhoto(p: PhotoRow) {
+    if (!editing?.id) return;
+    if (!confirm("Delete this photo?")) return;
+    await api("deleteAnimalPhoto", {
+      tenant_id: tenantId,
+      animal_id: editing.id,
+      id: p.id,
+      photo_path: p.photo_path,
+    });
+    await loadPhotos(editing.id);
+    await loadAnimals();
+  }
 
+  /* Drag to reorder gallery */
+  function handleDragStart(idx: number) {
+    setDragIndex(idx);
+  }
+  function handleDragOver(e: React.DragEvent<HTMLDivElement>) {
+    e.preventDefault();
+  }
+  async function handleDrop(idx: number) {
+    if (dragIndex === null || dragIndex === idx) return;
+    const next = [...photos];
+    const [moved] = next.splice(dragIndex, 1);
+    next.splice(idx, 0, moved);
+    setPhotos(next);
+    setDragIndex(null);
+
+    const ordered_ids = next.map((p) => p.id);
+    try {
+      await fetch("/api/cattle", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          action: "reorderAnimalPhotos",
+          tenant_id: tenantId,
+          animal_id: editing?.id,
+          ordered_ids,
+        }),
+      });
+    } catch (e) {
+      console.error(e);
+      alert("Failed to save new order");
+    }
+  }
+
+  /* CSV: parser + import/export */
+  function parseCSV(text: string) {
+    const lines = text.split(/\r?\n/).filter((l) => l.trim().length > 0);
+    if (!lines.length) return { header: [] as string[], rows: [] as string[][] };
+    const splitRow = (line: string) =>
+      (line.match(/("([^"]|"")*"|[^,]*)/g) || [])
+        .map((c) => c.replace(/^"|"$/g, "").replace(/""/g, `"`));
+
+    const header = splitRow(lines[0]).map((h) => h.trim());
+    const rows = lines.slice(1).map(splitRow);
+    return { header, rows };
+  }
+
+  async function importCSV(file: File) {
+    try {
+      setImportBusy(true);
+      setImportMsg(null);
+
+      const text = await file.text();
+      const { header, rows } = parseCSV(text);
+      if (!header.length || rows.length === 0) {
+        setImportMsg("CSV is empty or missing header");
+        return;
+      }
+      const indexOf = (name: string) =>
+        header.findIndex((h) => h.toLowerCase() === name.toLowerCase());
+
+      const mapped = rows
+        .map((cols) => {
+          const get = (n: string) => {
+            const ix = indexOf(n);
+            return ix >= 0 ? (cols[ix] || "").trim() : "";
+          };
+          const tag = get("tag") || get("Tag") || get("TAG");
+          if (!tag) return null;
+          return {
+            tenant_id: tenantId,
+            tag,
+            name: get("name") || null,
+            sex: get("sex") ? get("sex").toUpperCase() : null,
+            breed: get("breed") || null,
+            birth_date: get("birth_date") || null,
+            current_paddock: get("current_paddock") || null,
+            status: get("status") || "active",
+          };
+        })
+        .filter(Boolean) as any[];
+
+      if (mapped.length === 0) {
+        setImportMsg("No valid rows found (need a 'tag' column).");
+        return;
+      }
+
+      setImportMsg(`Parsed ${mapped.length} rows, uploading…`);
+      const res = await fetch("/api/cattle", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action: "bulkUpsertAnimals", rows: mapped }),
+      });
+
+      let json: any = null;
+      try {
+        json = await res.json();
+      } catch {
+        setImportMsg(`Error: server responded ${res.status} ${res.statusText}`);
+        return;
+      }
+
+      if (!res.ok || !json?.ok) {
+        setImportMsg(`Error: ${json?.error || "import failed"}`);
+        return;
+      }
+
+      setImportMsg(`Imported ${json.data?.imported ?? mapped.length} animals`);
+      await loadAnimals();
+    } catch (e: any) {
+      console.error(e);
+      setImportMsg(`Error: ${e.message || "failed to import"}`);
+    } finally {
+      setImportBusy(false);
+      if (fileRef.current) fileRef.current.value = "";
+    }
+  }
+
+  function exportCSV() {
+    const header = [
+      "tenant_id",
+      "tag",
+      "name",
+      "sex",
+      "breed",
+      "birth_date",
+      "current_paddock",
+      "status",
+    ];
+    const rows = animals.map((a) => [
+      tenantId,
+      a.tag ?? "",
+      a.name ?? "",
+      a.sex ?? "",
+      a.breed ?? "",
+      a.birth_date ?? "",
+      a.current_paddock ?? "",
+      a.status ?? "",
+    ]);
+    const csv = [header, ...rows]
+      .map((r) => r.map((x) => `"${String(x).replace(/"/g, '""')}"`).join(","))
+      .join("\n");
+    const blob = new Blob([csv], { type: "text/csv;charset=utf-8" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `cattle_${tenantId}.csv`;
+    a.click();
+    URL.revokeObjectURL(url);
+  }
+
+  /* Scanner */
   function onScanKeyDown(e: React.KeyboardEvent<HTMLInputElement>) {
     if (e.key === "Enter") {
       const tag = scanValue.trim();
       if (!tag) return;
-      const found = animals.find(
-        (a) => a.tag.toLowerCase() === tag.toLowerCase()
-      );
+      const found = animals.find((a) => a.tag.toLowerCase() === tag.toLowerCase());
       if (found) startEdit(found);
       else alert(`No animal with tag: ${tag}`);
       setScanValue("");
     }
   }
 
+  /* Reports */
   const filteredWeights = useMemo(() => {
     let arr = weights;
     if (from) arr = arr.filter((w) => w.weigh_date >= from);
@@ -442,11 +546,10 @@ async function importCSV(file: File) {
 
   const adg = useMemo(() => {
     if (filteredWeights.length < 2) return null;
-    const first = filteredWeights[0],
-      last = filteredWeights[filteredWeights.length - 1];
+    const first = filteredWeights[0];
+    const last = filteredWeights[filteredWeights.length - 1];
     const days =
-      (new Date(last.weigh_date).getTime() -
-        new Date(first.weigh_date).getTime()) /
+      (new Date(last.weigh_date).getTime() - new Date(first.weigh_date).getTime()) /
       86400000;
     if (days <= 0) return null;
     return (Number(last.weight_lb) - Number(first.weight_lb)) / days;
@@ -461,15 +564,139 @@ async function importCSV(file: File) {
       const key = (t.product || "Unspecified").trim();
       map.set(key, (map.get(key) || 0) + 1);
     }
-    return Array.from(map.entries()).map(([product, count]) => ({
-      product,
-      count,
-    }));
+    return Array.from(map.entries()).map(([product, count]) => ({ product, count }));
   }, [treats, from, to]);
 
-  /* ─────────────────────────────────────────
-     UI
-  ────────────────────────────────────────── */
+  /* PDF helpers */
+  async function fetchImageAsDataURL(url: string): Promise<string | null> {
+    try {
+      const res = await fetch(url, { mode: "cors" });
+      const blob = await res.blob();
+      return await new Promise((resolve) => {
+        const reader = new FileReader();
+        reader.onload = () => resolve(reader.result as string);
+        reader.readAsDataURL(blob);
+      });
+    } catch (e) {
+      console.error("Image fetch failed", e);
+      return null;
+    }
+  }
+  function formatDate(d?: string | null) {
+    return d ? new Date(d).toISOString().slice(0, 10) : "";
+  }
+  async function exportAnimalPdf() {
+    if (!editing) return;
+
+    const doc = new jsPDF({ unit: "pt", format: "letter" });
+    const marginX = 54, marginY = 54, line = 16;
+    let y = marginY;
+
+    // Choose favorite photo: explicit selection → primary → first
+    let favorite: PhotoRow | undefined;
+    if (favForPdf && favForPdf !== "primary") {
+      favorite = photos.find((p) => p.id === favForPdf);
+    } else {
+      favorite = photos.find((p) => p.is_primary) || photos[0];
+    }
+
+    // Title
+    doc.setFont("helvetica", "bold");
+    doc.setFontSize(18);
+    doc.setTextColor("#004225");
+    doc.text(`Cattle Detail — ${editing.tag}`, marginX, y);
+    y += line * 1.5;
+
+    // Photo + details
+    if (favorite?.photo_url) {
+      const dataUrl = await fetchImageAsDataURL(favorite.photo_url);
+      if (dataUrl) {
+        const imgW = 200, imgH = 200;
+        doc.addImage(dataUrl, "JPEG", marginX, y, imgW, imgH, undefined, "FAST");
+        let tx = marginX + imgW + 16;
+        let ty = y + 2;
+
+        doc.setFont("helvetica", "normal");
+        doc.setFontSize(11);
+        const fields: [string, string | number | null | undefined][] = [
+          ["Tag", editing.tag],
+          ["Name", editing.name || ""],
+          ["Sex", editing.sex || ""],
+          ["Breed", editing.breed || ""],
+          ["Birth Date", formatDate(editing.birth_date)],
+          ["Paddock", editing.current_paddock || ""],
+          ["Status", editing.status || ""],
+        ];
+        fields.forEach(([k, v]) => {
+          doc.text(`${k}: ${String(v ?? "")}`, tx, ty);
+          ty += line;
+        });
+
+        y += imgH + 24;
+      } else {
+        y += line;
+      }
+    } else {
+      y += line;
+    }
+
+    // Weights
+    doc.setFont("helvetica", "bold");
+    doc.setFontSize(13);
+    doc.setTextColor("#004225");
+    doc.text("Weights", marginX, y);
+    y += line;
+
+    doc.setFont("helvetica", "normal");
+    doc.setTextColor("#000000");
+    const weightsToPrint = [...weights].sort((a, b) => a.weigh_date.localeCompare(b.weigh_date));
+    if (weightsToPrint.length === 0) {
+      doc.text("No weights on record.", marginX, y);
+      y += line;
+    } else {
+      weightsToPrint.forEach((w) => {
+        doc.text(`${formatDate(w.weigh_date)} — ${w.weight_lb} lb${w.notes ? " — " + w.notes : ""}`, marginX, y);
+        y += line;
+        if (y > 720) { doc.addPage(); y = marginY; }
+      });
+    }
+
+    // Treatments
+    y += 8;
+    doc.setFont("helvetica", "bold");
+    doc.setFontSize(13);
+    doc.setTextColor("#004225");
+    doc.text("Treatments", marginX, y);
+    y += line;
+
+    doc.setFont("helvetica", "normal");
+    doc.setTextColor("#000000");
+    const treatsToPrint = [...treats].sort((a, b) => a.treat_date.localeCompare(b.treat_date));
+    if (treatsToPrint.length === 0) {
+      doc.text("No treatments on record.", marginX, y);
+      y += line;
+    } else {
+      treatsToPrint.forEach((t) => {
+        doc.text(
+          `${formatDate(t.treat_date)} — ${t.product || "Unspecified"}${t.dose ? " — " + t.dose : ""}${t.notes ? " — " + t.notes : ""}`,
+          marginX, y
+        );
+        y += line;
+        if (y > 720) { doc.addPage(); y = marginY; }
+      });
+    }
+
+    // Footer
+    y += 12;
+    doc.setFont("helvetica", "italic");
+    doc.setFontSize(9);
+    doc.setTextColor("#666");
+    doc.text("Generated by AgriOps", marginX, y);
+
+    doc.save(`cattle_${editing.tag}.pdf`);
+  }
+
+  /* ───────────────────────── Render ───────────────────────── */
   return (
     <Card>
       <CardHeader>
@@ -485,9 +712,7 @@ async function importCSV(file: File) {
                 <Label>Tag *</Label>
                 <Input
                   value={draft.tag}
-                  onChange={(e) =>
-                    setDraft({ ...draft, tag: e.target.value })
-                  }
+                  onChange={(e) => setDraft({ ...draft, tag: e.target.value })}
                   placeholder="e.g., BR123"
                 />
               </div>
@@ -495,9 +720,7 @@ async function importCSV(file: File) {
                 <Label>Name</Label>
                 <Input
                   value={draft.name || ""}
-                  onChange={(e) =>
-                    setDraft({ ...draft, name: e.target.value })
-                  }
+                  onChange={(e) => setDraft({ ...draft, name: e.target.value })}
                 />
               </div>
               <div>
@@ -517,9 +740,7 @@ async function importCSV(file: File) {
                 <Label>Breed</Label>
                 <Input
                   value={draft.breed || ""}
-                  onChange={(e) =>
-                    setDraft({ ...draft, breed: e.target.value })
-                  }
+                  onChange={(e) => setDraft({ ...draft, breed: e.target.value })}
                 />
               </div>
               <div>
@@ -527,27 +748,21 @@ async function importCSV(file: File) {
                 <Input
                   type="date"
                   value={draft.birth_date || ""}
-                  onChange={(e) =>
-                    setDraft({ ...draft, birth_date: e.target.value })
-                  }
+                  onChange={(e) => setDraft({ ...draft, birth_date: e.target.value })}
                 />
               </div>
               <div>
                 <Label>Paddock</Label>
                 <Input
                   value={draft.current_paddock || ""}
-                  onChange={(e) =>
-                    setDraft({ ...draft, current_paddock: e.target.value })
-                  }
+                  onChange={(e) => setDraft({ ...draft, current_paddock: e.target.value })}
                 />
               </div>
               <div>
                 <Label>Status</Label>
                 <Input
                   value={draft.status || ""}
-                  onChange={(e) =>
-                    setDraft({ ...draft, status: e.target.value })
-                  }
+                  onChange={(e) => setDraft({ ...draft, status: e.target.value })}
                   placeholder="active/sold/culled/dead"
                 />
               </div>
@@ -570,18 +785,13 @@ async function importCSV(file: File) {
                     value={search}
                     onChange={(e) => setSearch(e.target.value)}
                   />
-                  <Button
-                    variant="outline"
-                    onClick={loadAnimals}
-                    disabled={loading}
-                  >
+                  <Button variant="outline" onClick={loadAnimals} disabled={loading}>
                     {loading ? "Loading…" : "Refresh"}
                   </Button>
                 </div>
               </div>
               <div>
                 <Label>Scan Tag (QR/Barcode)</Label>
-                {/* native input to guarantee ref works */}
                 <input
                   ref={scanRef}
                   value={scanValue}
@@ -593,7 +803,7 @@ async function importCSV(file: File) {
               </div>
             </div>
 
-            <div className="flex flex-wrap gap-2 mt-3">
+            <div className="flex flex-wrap gap-2 mt-3 items-center">
               <Button variant="outline" onClick={exportCSV}>
                 Export CSV
               </Button>
@@ -607,14 +817,17 @@ async function importCSV(file: File) {
                   if (f) importCSV(f);
                 }}
               />
-              <Button
-                variant="outline"
-                onClick={() => fileRef.current?.click()}
-              >
-                Import CSV
+              <Button variant="outline" onClick={() => fileRef.current?.click()} disabled={importBusy}>
+                {importBusy ? "Importing…" : "Import CSV"}
               </Button>
               {importMsg && (
-                <span className="text-sm text-green-700">{importMsg}</span>
+                <span className="text-sm ml-2">
+                  {importMsg.startsWith("Error:") ? (
+                    <span className="text-red-600">{importMsg}</span>
+                  ) : (
+                    <span className="text-green-700">{importMsg}</span>
+                  )}
+                </span>
               )}
             </div>
 
@@ -623,6 +836,7 @@ async function importCSV(file: File) {
               <table className="w-full text-sm">
                 <thead className="bg-slate-100">
                   <tr>
+                    <th className="text-left p-2">Photo</th>
                     <th className="text-left p-2">Tag</th>
                     <th className="text-left p-2">Name</th>
                     <th className="text-left p-2">Sex</th>
@@ -636,6 +850,19 @@ async function importCSV(file: File) {
                 <tbody>
                   {animals.map((a) => (
                     <tr key={a.id || a.tag} className="border-t">
+                      <td className="p-2">
+                        {a.primary_photo_url ? (
+                          <img
+                            src={a.primary_photo_url}
+                            alt={a.tag}
+                            className="h-10 w-10 object-cover rounded-md border"
+                          />
+                        ) : (
+                          <div className="h-10 w-10 rounded-md border bg-slate-100 flex items-center justify-center text-[10px] text-slate-500">
+                            No photo
+                          </div>
+                        )}
+                      </td>
                       <td className="p-2 font-mono">{a.tag}</td>
                       <td className="p-2">{a.name}</td>
                       <td className="p-2">{a.sex}</td>
@@ -644,11 +871,7 @@ async function importCSV(file: File) {
                       <td className="p-2">{a.current_paddock}</td>
                       <td className="p-2">{a.status}</td>
                       <td className="p-2 text-right">
-                        <Button
-                          size="sm"
-                          variant="outline"
-                          onClick={() => startEdit(a)}
-                        >
+                        <Button size="sm" variant="outline" onClick={() => startEdit(a)}>
                           Open
                         </Button>
                       </td>
@@ -656,7 +879,7 @@ async function importCSV(file: File) {
                   ))}
                   {animals.length === 0 && (
                     <tr>
-                      <td className="p-2" colSpan={8}>
+                      <td className="p-2" colSpan={9}>
                         No cattle yet. Add your first animal on the left.
                       </td>
                     </tr>
@@ -667,18 +890,14 @@ async function importCSV(file: File) {
           </div>
         </div>
 
-        {/* Detail + Reports + Processing */}
+        {/* Detail Drawer */}
         {editing && (
           <div className="border rounded-xl p-4 bg-white/80">
             <div className="flex items-center justify-between mb-2">
               <div className="text-lg font-semibold">
                 Tag <span className="font-mono">{editing.tag}</span>
               </div>
-              <Button
-                variant="outline"
-                size="sm"
-                onClick={() => setEditing(null)}
-              >
+              <Button variant="outline" size="sm" onClick={() => setEditing(null)}>
                 Close
               </Button>
             </div>
@@ -689,9 +908,7 @@ async function importCSV(file: File) {
                 <Label>Name</Label>
                 <Input
                   value={editing.name || ""}
-                  onChange={(e) =>
-                    setEditing({ ...editing, name: e.target.value })
-                  }
+                  onChange={(e) => setEditing({ ...editing, name: e.target.value })}
                 />
               </div>
               <div>
@@ -711,9 +928,7 @@ async function importCSV(file: File) {
                 <Label>Breed</Label>
                 <Input
                   value={editing.breed || ""}
-                  onChange={(e) =>
-                    setEditing({ ...editing, breed: e.target.value })
-                  }
+                  onChange={(e) => setEditing({ ...editing, breed: e.target.value })}
                 />
               </div>
               <div>
@@ -721,33 +936,119 @@ async function importCSV(file: File) {
                 <Input
                   type="date"
                   value={editing.birth_date || ""}
-                  onChange={(e) =>
-                    setEditing({ ...editing, birth_date: e.target.value })
-                  }
+                  onChange={(e) => setEditing({ ...editing, birth_date: e.target.value })}
                 />
               </div>
               <div>
                 <Label>Paddock</Label>
                 <Input
                   value={editing.current_paddock || ""}
-                  onChange={(e) =>
-                    setEditing({ ...editing, current_paddock: e.target.value })
-                  }
+                  onChange={(e) => setEditing({ ...editing, current_paddock: e.target.value })}
                 />
               </div>
               <div>
                 <Label>Status</Label>
                 <Input
                   value={editing.status || ""}
-                  onChange={(e) =>
-                    setEditing({ ...editing, status: e.target.value })
-                  }
+                  onChange={(e) => setEditing({ ...editing, status: e.target.value })}
                 />
               </div>
               <div className="md:col-span-3">
-                <Button onClick={() => updateAnimal(editing!)}>
-                  Save Changes
-                </Button>
+                <Button onClick={() => updateAnimal(editing!)}>Save Changes</Button>
+              </div>
+            </div>
+
+            {/* Photos (drag, favorite, export) */}
+            <div className="mt-6 border rounded-xl p-4 bg-white/80">
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <div className="font-medium">Photos</div>
+                <div className="flex items-center gap-2">
+                  <label className="text-sm">
+                    <span className="px-3 py-1 border rounded-md cursor-pointer bg-white hover:bg-slate-50">
+                      {uploading ? "Uploading…" : "Upload Photos"}
+                    </span>
+                    <input
+                      type="file"
+                      accept="image/*"
+                      multiple
+                      className="hidden"
+                      onChange={(e) => e.target.files && uploadPhotos(e.target.files)}
+                    />
+                  </label>
+
+                  {/* Favorite photo selection for PDF */}
+                  <select
+                    className="text-sm border rounded-md px-2 py-1"
+                    value={String(favForPdf ?? "")}
+                    onChange={(e) => {
+                      const v = e.target.value;
+                      setFavForPdf(v === "primary" ? "primary" : Number(v));
+                    }}
+                    title="Photo to use on PDF"
+                  >
+                    <option value="primary">Use Primary Photo</option>
+                    {photos.map((p) => (
+                      <option value={p.id} key={p.id}>
+                        #{p.id} {p.is_primary ? "(primary)" : ""}
+                      </option>
+                    ))}
+                  </select>
+
+                  <Button size="sm" onClick={exportAnimalPdf}>Export PDF</Button>
+                </div>
+              </div>
+
+              <div className="mt-3 grid grid-cols-2 md:grid-cols-4 lg:grid-cols-6 gap-3">
+                {photos.map((p, idx) => (
+                  <div
+                    key={p.id}
+                    className="relative group cursor-move"
+                    draggable
+                    onDragStart={() => handleDragStart(idx)}
+                    onDragOver={handleDragOver}
+                    onDrop={() => handleDrop(idx)}
+                    title="Drag to reorder"
+                  >
+                    <img
+                      src={p.photo_url}
+                      alt={editing?.tag}
+                      className={`h-28 w-full object-cover rounded-lg border ${
+                        p.is_primary ? "ring-2 ring-emerald-500" : ""
+                      }`}
+                    />
+                    <div className="absolute inset-x-1 bottom-1 flex gap-1 justify-center opacity-0 group-hover:opacity-100 transition">
+                      {!p.is_primary && (
+                        <button
+                          className="text-xs px-2 py-1 bg-white/90 border rounded"
+                          onClick={() => setPrimaryPhoto(p.id, p.photo_url)}
+                          title="Set as primary"
+                        >
+                          Set Primary
+                        </button>
+                      )}
+                      <button
+                        className="text-xs px-2 py-1 bg-white/90 border rounded text-red-700"
+                        onClick={() => deletePhoto(p)}
+                        title="Delete photo"
+                      >
+                        Delete
+                      </button>
+                    </div>
+                    {p.is_primary && (
+                      <div className="absolute top-1 left-1 text-[10px] bg-emerald-600 text-white px-1.5 py-0.5 rounded">
+                        Primary
+                      </div>
+                    )}
+                    <div className="absolute top-1 right-1 text-[10px] bg-white/90 border px-1 rounded opacity-0 group-hover:opacity-100">
+                      ↕︎ drag
+                    </div>
+                  </div>
+                ))}
+                {photos.length === 0 && (
+                  <div className="text-sm text-slate-600 col-span-full">
+                    No photos yet. Use “Upload Photos” to add images for this animal.
+                  </div>
+                )}
               </div>
             </div>
 
@@ -773,25 +1074,112 @@ async function importCSV(file: File) {
               />
             </div>
 
+            {/* Processing */}
+            <div className="mt-6 border rounded-xl p-4 bg-white/80">
+              <div className="font-medium mb-2">Processing</div>
+              <div className="grid md:grid-cols-5 gap-2">
+                <div>
+                  <Label>Sent Date</Label>
+                  <Input
+                    type="date"
+                    value={procDraft.sent_date || ""}
+                    onChange={(e) => setProcDraft({ ...procDraft, sent_date: e.target.value })}
+                  />
+                </div>
+                <div>
+                  <Label>Processor</Label>
+                  <Input
+                    value={procDraft.processor || ""}
+                    onChange={(e) => setProcDraft({ ...procDraft, processor: e.target.value })}
+                  />
+                </div>
+                <div>
+                  <Label>Transport ID</Label>
+                  <Input
+                    value={procDraft.transport_id || ""}
+                    onChange={(e) => setProcDraft({ ...procDraft, transport_id: e.target.value })}
+                  />
+                </div>
+                <div>
+                  <Label>Live Weight (lb)</Label>
+                  <Input
+                    type="number"
+                    value={procDraft.live_weight_lb ?? ""}
+                    onChange={(e) =>
+                      setProcDraft({ ...procDraft, live_weight_lb: Number(e.target.value || 0) })
+                    }
+                  />
+                </div>
+                <div>
+                  <Label>Notes</Label>
+                  <Input
+                    value={procDraft.notes || ""}
+                    onChange={(e) => setProcDraft({ ...procDraft, notes: e.target.value })}
+                  />
+                </div>
+                <div className="md:col-span-5">
+                  <Button onClick={sendToProcessing}>Send to Processing</Button>
+                </div>
+              </div>
+
+              <div className="overflow-auto mt-3 border rounded">
+                <table className="w-full text-sm">
+                  <thead className="bg-slate-100">
+                    <tr>
+                      <th className="text-left p-2">Date</th>
+                      <th className="text-left p-2">Status</th>
+                      <th className="text-left p-2">Processor</th>
+                      <th className="text-left p-2">Live Wt</th>
+                      <th className="text-left p-2">Notes</th>
+                      <th className="text-right p-2 w-28">Actions</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {processing.map((r) => (
+                      <tr key={r.id} className="border-t">
+                        <td className="p-2">{r.sent_date}</td>
+                        <td className="p-2">{r.status}</td>
+                        <td className="p-2">{r.processor}</td>
+                        <td className="p-2">{r.live_weight_lb}</td>
+                        <td className="p-2">{r.notes}</td>
+                        <td className="p-2 text-right">
+                          <Button
+                            size="sm"
+                            variant="outline"
+                            onClick={() =>
+                              updateProcessingRow(r, {
+                                status: r.status === "scheduled" ? "in_transit" : "scheduled",
+                              })
+                            }
+                          >
+                            Toggle Status
+                          </Button>
+                        </td>
+                      </tr>
+                    ))}
+                    {processing.length === 0 && (
+                      <tr>
+                        <td className="p-2" colSpan={6}>
+                          No processing records yet.
+                        </td>
+                      </tr>
+                    )}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+
             {/* Reports */}
             <div className="mt-6">
               <div className="font-medium mb-2">Reports (date range)</div>
               <div className="grid md:grid-cols-3 gap-2 mb-3">
                 <div>
                   <Label>From</Label>
-                  <Input
-                    type="date"
-                    value={from}
-                    onChange={(e) => setFrom(e.target.value)}
-                  />
+                  <Input type="date" value={from} onChange={(e) => setFrom(e.target.value)} />
                 </div>
                 <div>
                   <Label>To</Label>
-                  <Input
-                    type="date"
-                    value={to}
-                    onChange={(e) => setTo(e.target.value)}
-                  />
+                  <Input type="date" value={to} onChange={(e) => setTo(e.target.value)} />
                 </div>
                 <div className="flex items-end">
                   <Button variant="outline" onClick={() => {}}>
@@ -802,21 +1190,16 @@ async function importCSV(file: File) {
 
               <div className="grid md:grid-cols-2 gap-3">
                 <div className="border rounded-lg p-3 bg-white/60">
-                  <div className="font-semibold mb-1">
-                    Average Daily Gain (ADG)
-                  </div>
+                  <div className="font-semibold mb-1">Average Daily Gain (ADG)</div>
                   {adg !== null ? (
                     <div className="text-sm">
                       ADG: <b>{adg.toFixed(2)}</b> lb/day
                     </div>
                   ) : (
-                    <div className="text-sm">
-                      Not enough weight records in range.
-                    </div>
+                    <div className="text-sm">Not enough weight records in range.</div>
                   )}
                   <div className="text-xs text-slate-600 mt-1">
-                    ADG uses earliest and latest weights in the selected date
-                    range.
+                    ADG uses earliest and latest weights in the selected date range.
                   </div>
                 </div>
 
@@ -838,222 +1221,6 @@ async function importCSV(file: File) {
                 </div>
               </div>
             </div>
-
-            {/* Processing */}
-            <div className="mt-6">
-              <div className="font-medium mb-2">Processing</div>
-
-              {/* Create new processing record */}
-              <div className="border rounded-lg p-3 bg-white/60 mb-3">
-                <div className="grid md:grid-cols-5 gap-2">
-                  <div>
-                    <Label>Sent Date *</Label>
-                    <Input
-                      type="date"
-                      value={procDraft.sent_date || ""}
-                      onChange={(e) =>
-                        setProcDraft({ ...procDraft, sent_date: e.target.value })
-                      }
-                    />
-                  </div>
-                  <div>
-                    <Label>Processor</Label>
-                    <Input
-                      value={procDraft.processor || ""}
-                      onChange={(e) =>
-                        setProcDraft({ ...procDraft, processor: e.target.value })
-                      }
-                    />
-                  </div>
-                  <div>
-                    <Label>Transport ID</Label>
-                    <Input
-                      value={procDraft.transport_id || ""}
-                      onChange={(e) =>
-                        setProcDraft({
-                          ...procDraft,
-                          transport_id: e.target.value,
-                        })
-                      }
-                    />
-                  </div>
-                  <div>
-                    <Label>Live Wt (lb)</Label>
-                    <Input
-                      type="number"
-                      value={(procDraft.live_weight_lb as any) || ""}
-                      onChange={(e) =>
-                        setProcDraft({
-                          ...procDraft,
-                          live_weight_lb: e.target.value
-                            ? Number(e.target.value)
-                            : undefined,
-                        })
-                      }
-                    />
-                  </div>
-                  <div className="md:col-span-5">
-                    <Label>Notes</Label>
-                    <Input
-                      value={procDraft.notes || ""}
-                      onChange={(e) =>
-                        setProcDraft({ ...procDraft, notes: e.target.value })
-                      }
-                    />
-                  </div>
-                  <div className="md:col-span-5">
-                    <Button onClick={sendToProcessing}>Send to Processing</Button>
-                  </div>
-                </div>
-              </div>
-
-              {/* Existing processing rows */}
-              <div className="overflow-auto border rounded">
-                <table className="w-full text-sm">
-                  <thead className="bg-slate-100">
-                    <tr>
-                      <th className="text-left p-2">Sent</th>
-                      <th className="text-left p-2">Status</th>
-                      <th className="text-left p-2">Processor</th>
-                      <th className="text-left p-2">Live</th>
-                      <th className="text-left p-2">HCW</th>
-                      <th className="text-left p-2">Carcass</th>
-                      <th className="text-left p-2">Yield%</th>
-                      <th className="text-left p-2">Grade</th>
-                      <th className="text-right p-2">Actions</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {processing.map((p) => (
-                      <tr key={p.id} className="border-t">
-                        <td className="p-2">{p.sent_date}</td>
-                        <td className="p-2">{p.status}</td>
-                        <td className="p-2">{p.processor}</td>
-                        <td className="p-2">{p.live_weight_lb ?? ""}</td>
-                        <td className="p-2">{p.hot_carcass_weight_lb ?? ""}</td>
-                        <td className="p-2">{p.carcass_weight_lb ?? ""}</td>
-                        <td className="p-2">
-                          {p.yield_pct ??
-                            (p.hot_carcass_weight_lb && p.live_weight_lb
-                              ? (
-                                  (Number(p.hot_carcass_weight_lb) /
-                                    Number(p.live_weight_lb)) *
-                                  100
-                                ).toFixed(1)
-                              : "")}
-                        </td>
-                        <td className="p-2">{p.grade ?? ""}</td>
-                        <td className="p-2 text-right">
-                          <div className="flex gap-2 justify-end">
-                            <Button
-                              size="sm"
-                              variant="outline"
-                              onClick={() =>
-                                updateProcessingRow(p, { status: "received" })
-                              }
-                            >
-                              Mark Received
-                            </Button>
-                            <Button
-                              size="sm"
-                              variant="outline"
-                              onClick={() =>
-                                updateProcessingRow(p, { status: "processed" })
-                              }
-                            >
-                              Mark Processed
-                            </Button>
-                          </div>
-
-                          {/* Inline editors */}
-                          <div className="mt-2 grid grid-cols-3 gap-2">
-                            <Input
-                              placeholder="HCW"
-                              type="number"
-                              value={p.hot_carcass_weight_lb ?? ""}
-                              onChange={(e) =>
-                                updateProcessingRow(p, {
-                                  hot_carcass_weight_lb: e.target.value
-                                    ? Number(e.target.value)
-                                    : null,
-                                })
-                              }
-                            />
-                            <Input
-                              placeholder="Carcass"
-                              type="number"
-                              value={p.carcass_weight_lb ?? ""}
-                              onChange={(e) =>
-                                updateProcessingRow(p, {
-                                  carcass_weight_lb: e.target.value
-                                    ? Number(e.target.value)
-                                    : null,
-                                })
-                              }
-                            />
-                            <Input
-                              placeholder="Grade"
-                              value={p.grade ?? ""}
-                              onChange={(e) =>
-                                updateProcessingRow(p, {
-                                  grade: e.target.value || null,
-                                })
-                              }
-                            />
-                            <Input
-                              placeholder="Yield %"
-                              type="number"
-                              value={p.yield_pct ?? ""}
-                              onChange={(e) =>
-                                updateProcessingRow(p, {
-                                  yield_pct: e.target.value
-                                    ? Number(e.target.value)
-                                    : null,
-                                })
-                              }
-                            />
-                            <Input
-                              placeholder="Lot"
-                              value={p.lot_code ?? ""}
-                              onChange={(e) =>
-                                updateProcessingRow(p, {
-                                  lot_code: e.target.value || null,
-                                })
-                              }
-                            />
-                            <Input
-                              placeholder="Cut Sheet URL"
-                              value={p.cut_sheet_url ?? ""}
-                              onChange={(e) =>
-                                updateProcessingRow(p, {
-                                  cut_sheet_url: e.target.value || null,
-                                })
-                              }
-                            />
-                            <Input
-                              placeholder="Invoice URL"
-                              value={p.invoice_url ?? ""}
-                              onChange={(e) =>
-                                updateProcessingRow(p, {
-                                  invoice_url: e.target.value || null,
-                                })
-                              }
-                            />
-                          </div>
-                        </td>
-                      </tr>
-                    ))}
-                    {processing.length === 0 && (
-                      <tr>
-                        <td className="p-2" colSpan={9}>
-                          No processing records yet.
-                        </td>
-                      </tr>
-                    )}
-                  </tbody>
-                </table>
-              </div>
-            </div>
           </div>
         )}
       </CardContent>
@@ -1061,9 +1228,8 @@ async function importCSV(file: File) {
   );
 }
 
-/* ─────────────────────────────────────────
-   Subcomponents
-────────────────────────────────────────── */
+/* ───────────────────────── Subcomponents ───────────────────────── */
+
 function WeightEditor({
   tenantId,
   animalId,
@@ -1072,12 +1238,7 @@ function WeightEditor({
 }: {
   tenantId: string;
   animalId: number;
-  onAdd: (
-    animalId: number,
-    date: string,
-    weight: number,
-    notes?: string
-  ) => Promise<void>;
+  onAdd: (animalId: number, date: string, weight: number, notes?: string) => Promise<void>;
   weights: Weight[];
 }) {
   const [date, setDate] = useState("");
@@ -1089,11 +1250,7 @@ function WeightEditor({
       <div className="grid md:grid-cols-4 gap-2">
         <div>
           <Label>Date</Label>
-          <Input
-            type="date"
-            value={date}
-            onChange={(e) => setDate(e.target.value)}
-          />
+          <Input type="date" value={date} onChange={(e) => setDate(e.target.value)} />
         </div>
         <div>
           <Label>Weight (lb)</Label>
@@ -1109,11 +1266,7 @@ function WeightEditor({
           <Input value={notes} onChange={(e) => setNotes(e.target.value)} />
         </div>
         <div className="md:col-span-4">
-          <Button
-            onClick={() =>
-              onAdd(animalId, date, Number(w || 0), notes || undefined)
-            }
-          >
+          <Button onClick={() => onAdd(animalId, date, Number(w || 0), notes || undefined)}>
             Add Weight
           </Button>
         </div>
@@ -1158,13 +1311,7 @@ function TreatEditor({
 }: {
   tenantId: string;
   animalId: number;
-  onAdd: (
-    animalId: number,
-    date: string,
-    product?: string,
-    dose?: string,
-    notes?: string
-  ) => Promise<void>;
+  onAdd: (animalId: number, date: string, product?: string, dose?: string, notes?: string) => Promise<void>;
   treats: Treatment[];
 }) {
   const [date, setDate] = useState("");
@@ -1177,11 +1324,7 @@ function TreatEditor({
       <div className="grid md:grid-cols-5 gap-2">
         <div>
           <Label>Date</Label>
-          <Input
-            type="date"
-            value={date}
-            onChange={(e) => setDate(e.target.value)}
-          />
+          <Input type="date" value={date} onChange={(e) => setDate(e.target.value)} />
         </div>
         <div>
           <Label>Product</Label>
@@ -1197,15 +1340,7 @@ function TreatEditor({
         </div>
         <div className="md:col-span-5">
           <Button
-            onClick={() =>
-              onAdd(
-                animalId,
-                date,
-                product || undefined,
-                dose || undefined,
-                notes || undefined
-              )
-            }
+            onClick={() => onAdd(animalId, date, product || undefined, dose || undefined, notes || undefined)}
           >
             Add Treatment
           </Button>
