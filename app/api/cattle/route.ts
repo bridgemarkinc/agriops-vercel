@@ -53,10 +53,79 @@ async function setPrimaryInternal(
 
 export async function POST(req: Request) {
   try {
+    const ctype = req.headers.get("content-type") || "";
+
+    /* ───────── A. multipart/form-data (file upload via service role) ───────── */
+    if (ctype.includes("multipart/form-data")) {
+      const form = await req.formData();
+      const action = String(form.get("action") || "");
+      if (action !== "uploadAnimalPhoto") {
+        return err(`Unsupported multipart action: ${action}`, 400);
+      }
+
+      const tenant_id = String(form.get("tenant_id") || "");
+      const animal_id = Number(form.get("animal_id") || 0);
+      const tag = String(form.get("tag") || "");
+      const file = form.get("file") as File | null;
+      const set_primary = String(form.get("set_primary") || "") === "true";
+
+      if (!tenant_id || !animal_id || !tag || !file) {
+        return err("tenant_id, animal_id, tag, file required");
+      }
+
+      // Build a unique path: tenant/animal/tag/timestamp_filename
+      const ts = Date.now();
+      const safeName = file.name.replace(/[^\w.\-]+/g, "_");
+      const filePath = `${tenant_id}/${animal_id}/${tag}/${ts}_${safeName}`;
+
+      // Upload to Storage with service role
+      const arrayBuf = await file.arrayBuffer();
+      const { error: upErr } = await admin.storage
+        .from(PHOTOS_BUCKET)
+        .upload(filePath, new Uint8Array(arrayBuf), {
+          upsert: false,
+          contentType: file.type || "application/octet-stream",
+        });
+      if (upErr) throw upErr;
+
+      // Public URL
+      const { data: pub } = admin.storage.from(PHOTOS_BUCKET).getPublicUrl(filePath);
+      const photo_url = pub?.publicUrl || "";
+      const photo_path = filePath;
+
+      // Determine next sort_order
+      const { data: existing, error: exErr } = await admin
+        .from("agriops_cattle_photos")
+        .select("id")
+        .eq("tenant_id", tenant_id)
+        .eq("animal_id", animal_id);
+      if (exErr) throw exErr;
+      const sort_order = (existing?.length || 0);
+
+      // Insert row
+      const { data: row, error: insErr } = await admin
+        .from("agriops_cattle_photos")
+        .insert({
+          tenant_id, animal_id, tag, photo_url, photo_path,
+          is_primary: false, sort_order,
+        })
+        .select("*")
+        .single();
+      if (insErr) throw insErr;
+
+      // Set primary if asked or first image
+      if (set_primary || (existing?.length ?? 0) === 0) {
+        await setPrimaryInternal(tenant_id, animal_id, row.id, photo_url);
+      }
+
+      return ok({ id: row.id, photo_url, photo_path });
+    }
+
+    /* ───────── B. JSON actions (normal API) ───────── */
     const body = await req.json();
     const action = String(body?.action || "");
 
-    /* ───────── Debug: prove service key is loaded in Production ───────── */
+    /* Debug: prove service key is loaded in Production */
     if (action === "debugRole") {
       return NextResponse.json({
         ok: true,
@@ -66,7 +135,7 @@ export async function POST(req: Request) {
       });
     }
 
-    /* ───────── Animals basic ───────── */
+    /* Animals basic */
     if (action === "upsertAnimal") {
       const { payload } = body as { payload: any };
       if (!payload?.tenant_id || !payload?.tag) return err("payload.tenant_id and payload.tag are required");
@@ -95,7 +164,7 @@ export async function POST(req: Request) {
       return ok({ imported: rows.length });
     }
 
-    /* ───────── Weights / Treatments ───────── */
+    /* Weights / Treatments */
     if (action === "addWeight") {
       const { tenant_id, animal_id, weigh_date, weight_lb, notes } = body;
       if (!tenant_id || !animal_id || !weigh_date || !weight_lb) {
@@ -118,7 +187,7 @@ export async function POST(req: Request) {
       return ok({ added: true });
     }
 
-    /* ───────── Processing (optional) ───────── */
+    /* Processing (optional) */
     if (action === "sendToProcessing") {
       const {
         tenant_id, animal_id, tag,
@@ -147,7 +216,7 @@ export async function POST(req: Request) {
       return ok({ sent: true });
     }
 
-    /* ───────── Photos (list/add/setPrimary/delete/reorder) ───────── */
+    /* Photos (list/add/setPrimary/delete/reorder) */
     if (action === "listAnimalPhotos") {
       const { tenant_id, animal_id } = body;
       if (!tenant_id || !animal_id) return err("tenant_id and animal_id are required");
