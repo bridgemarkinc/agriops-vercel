@@ -121,7 +121,7 @@ if (action === "listAnimalPhotos") {
       }
       return NextResponse.json({ ok: true });
     }
-// reorderAnimalPhotos
+// ────────────────────────────────Reorder Animal Photos────────────────────────────────
 if (action === "reorderAnimalPhotos") {
   const { tenant_id, animal_id, ordered_ids } = body as {
     tenant_id: string; animal_id: number; ordered_ids: number[];
