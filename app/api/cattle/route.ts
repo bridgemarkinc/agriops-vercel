@@ -23,13 +23,14 @@ export async function POST(req: Request) {
     const { action } = body;
 
     // ──────────────────────────────── DEBUG ────────────────────────────────
-    if (action === "debugRole") {
-      return NextResponse.json({
-        ok: true,
-        usingServiceRoleKey: !!process.env.SUPABASE_SERVICE_ROLE_KEY,
-        urlSet: !!process.env.NEXT_PUBLIC_SUPABASE_URL,
-      });
-    }
+   if (action === "debugRole") {
+  return NextResponse.json({
+    ok: true,
+    version: "cattle-route v6",
+    usingServiceRoleKey: !!process.env.SUPABASE_SERVICE_ROLE_KEY,
+    urlSet: !!process.env.NEXT_PUBLIC_SUPABASE_URL,
+  });
+}
 
     // ──────────────────────────────── BULK UPSERT ────────────────────────────────
     if (action === "bulkUpsertAnimals") {
