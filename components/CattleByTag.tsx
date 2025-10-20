@@ -8,7 +8,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import jsPDF from "jspdf";
 
-/* ───────────────────────── Supabase (browser) ───────────────────────── */
+/* ───────────────── Supabase (browser) ───────────────── */
 const SUPABASE = {
   url: process.env.NEXT_PUBLIC_SUPABASE_URL || "",
   anon: process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || "",
@@ -18,7 +18,7 @@ if (typeof window !== "undefined" && SUPABASE.url.startsWith("http")) {
   supabase = createClient(SUPABASE.url, SUPABASE.anon);
 }
 
-/* ───────────────────────── Types ───────────────────────── */
+/* ───────────────── Types ───────────────── */
 type Animal = {
   id?: number;
   tenant_id: string;
@@ -28,7 +28,7 @@ type Animal = {
   breed?: string | null;
   birth_date?: string | null;
   current_paddock?: string | null;
-  status?: string | null; // active, sold, culled, dead, processing, etc.
+  status?: string | null;
   primary_photo_url?: string | null;
 };
 
@@ -36,7 +36,7 @@ type Weight = {
   id?: number;
   tenant_id: string;
   animal_id: number;
-  weigh_date: string; // yyyy-mm-dd
+  weigh_date: string;
   weight_lb: number;
   notes?: string | null;
 };
@@ -45,7 +45,7 @@ type Treatment = {
   id?: number;
   tenant_id: string;
   animal_id: number;
-  treat_date: string; // yyyy-mm-dd
+  treat_date: string;
   product?: string | null;
   dose?: string | null;
   notes?: string | null;
@@ -83,22 +83,34 @@ type PhotoRow = {
   sort_order?: number;
 };
 
-/* ───────────────────────── Component ───────────────────────── */
+/* ───────────────── Component ───────────────── */
 export default function CattleByTag({ tenantId }: { tenantId: string }) {
-  /* List/search */
+  // list/search
   const [search, setSearch] = useState("");
   const [animals, setAnimals] = useState<Animal[]>([]);
   const [loading, setLoading] = useState(false);
 
-  /* Edit detail */
+  // edit
   const [editing, setEditing] = useState<Animal | null>(null);
   const [weights, setWeights] = useState<Weight[]>([]);
   const [treats, setTreats] = useState<Treatment[]>([]);
   const [processing, setProcessing] = useState<Processing[]>([]);
+
+  // photos
   const [photos, setPhotos] = useState<PhotoRow[]>([]);
   const [uploading, setUploading] = useState(false);
+  const [dragIndex, setDragIndex] = useState<number | null>(null);
+  const [favForPdf, setFavForPdf] = useState<number | "primary" | null>("primary");
 
-  /* New animal draft */
+  // dropzone + progress
+  const [dzActive, setDzActive] = useState(false);
+  const [uploadProgress, setUploadProgress] = useState(0); // 0..100
+  const [uploadTotals, setUploadTotals] = useState<{ done: number; total: number }>({
+    done: 0,
+    total: 0,
+  });
+
+  // new animal draft
   const [draft, setDraft] = useState<Animal>({
     tenant_id: tenantId,
     tag: "",
@@ -110,20 +122,20 @@ export default function CattleByTag({ tenantId }: { tenantId: string }) {
     status: "active",
   });
 
-  /* Scanner */
+  // scanner
   const scanRef = useRef<HTMLInputElement>(null);
   const [scanValue, setScanValue] = useState("");
 
-  /* CSV import/export */
+  // CSV
   const fileRef = useRef<HTMLInputElement>(null);
   const [importMsg, setImportMsg] = useState<string | null>(null);
   const [importBusy, setImportBusy] = useState(false);
 
-  /* Reports date range */
+  // reports range
   const [from, setFrom] = useState<string>("");
   const [to, setTo] = useState<string>("");
 
-  /* Processing draft */
+  // processing draft
   const [procDraft, setProcDraft] = useState<Partial<Processing>>({
     sent_date: "",
     processor: "",
@@ -132,11 +144,7 @@ export default function CattleByTag({ tenantId }: { tenantId: string }) {
     notes: "",
   });
 
-  /* Gallery: drag & favorite for PDF */
-  const [dragIndex, setDragIndex] = useState<number | null>(null);
-  const [favForPdf, setFavForPdf] = useState<number | "primary" | null>("primary");
-
-  /* Helpers */
+  /* helpers */
   async function api(action: string, body: any) {
     const res = await fetch("/api/cattle", {
       method: "POST",
@@ -148,7 +156,7 @@ export default function CattleByTag({ tenantId }: { tenantId: string }) {
     return json.data;
   }
 
-  /* Loaders */
+  /* loaders */
   async function loadAnimals() {
     if (!supabase) return alert("Supabase not configured");
     setLoading(true);
@@ -213,7 +221,7 @@ export default function CattleByTag({ tenantId }: { tenantId: string }) {
     scanRef.current?.focus();
   }, [editing]);
 
-  /* CRUD: animals */
+  /* CRUD animals */
   async function saveAnimal() {
     if (!draft.tag.trim()) return alert("Tag is required");
     const payload = {
@@ -254,7 +262,7 @@ export default function CattleByTag({ tenantId }: { tenantId: string }) {
     await loadAnimals();
   }
 
-  /* Weights & treatments */
+  /* weights & treatments */
   async function addWeight(
     animalId: number,
     weigh_date: string,
@@ -291,7 +299,7 @@ export default function CattleByTag({ tenantId }: { tenantId: string }) {
     await loadDetail(animalId);
   }
 
-  /* Processing */
+  /* processing */
   async function sendToProcessing() {
     if (!editing?.id) return;
     if (!procDraft.sent_date) return alert("Sent date is required");
@@ -314,20 +322,23 @@ export default function CattleByTag({ tenantId }: { tenantId: string }) {
     if (editing?.id) await loadProcessing(editing.id);
   }
 
-  /* Photos */
+  /* photos: upload with file-by-file progress */
   async function uploadPhotos(files: FileList) {
     try {
       if (!supabase || !editing?.id) return;
       setUploading(true);
+      setUploadTotals({ done: 0, total: files.length });
+      setUploadProgress(0);
 
-      for (const file of Array.from(files)) {
+      const list = Array.from(files);
+      for (let i = 0; i < list.length; i++) {
+        const file = list[i];
+
         const safeTag = (editing.tag || `id-${editing.id}`).replace(/[^a-z0-9_-]/gi, "_");
         const ext = (file.name.split(".").pop() || "jpg").toLowerCase();
         const path = `${tenantId}/${safeTag}/${Date.now()}_${Math.random().toString(36).slice(2)}.${ext}`;
 
-        const { error: upErr } = await supabase.storage
-          .from("cattle-photos")
-          .upload(path, file, { upsert: true });
+        const { error: upErr } = await supabase.storage.from("cattle-photos").upload(path, file, { upsert: true });
         if (upErr) throw upErr;
 
         const { data: pub } = supabase.storage.from("cattle-photos").getPublicUrl(path);
@@ -339,17 +350,26 @@ export default function CattleByTag({ tenantId }: { tenantId: string }) {
           tag: editing.tag,
           photo_url,
           photo_path: path,
-          set_primary: photos.length === 0, // first becomes primary
+          set_primary: photos.length === 0 && i === 0,
         });
+
+        const done = i + 1;
+        const total = list.length;
+        setUploadTotals({ done, total });
+        setUploadProgress(Math.round((done / total) * 100));
       }
 
       await loadPhotos(editing.id);
-      await loadAnimals(); // primary thumb might change
+      await loadAnimals();
     } catch (e: any) {
       console.error(e);
       alert(`Upload failed: ${e.message || e}`);
     } finally {
       setUploading(false);
+      setTimeout(() => {
+        setUploadProgress(0);
+        setUploadTotals({ done: 0, total: 0 });
+      }, 800);
     }
   }
 
@@ -374,7 +394,7 @@ export default function CattleByTag({ tenantId }: { tenantId: string }) {
     await loadAnimals();
   }
 
-  /* Drag to reorder gallery */
+  // drag to reorder gallery
   function handleDragStart(idx: number) {
     setDragIndex(idx);
   }
@@ -407,7 +427,22 @@ export default function CattleByTag({ tenantId }: { tenantId: string }) {
     }
   }
 
-  /* CSV: parser + import/export */
+  // dropzone handlers
+  function onDropZoneDragOver(e: React.DragEvent<HTMLDivElement>) {
+    e.preventDefault();
+    if (!dzActive) setDzActive(true);
+  }
+  function onDropZoneDragLeave() {
+    setDzActive(false);
+  }
+  function onDropZoneDrop(e: React.DragEvent<HTMLDivElement>) {
+    e.preventDefault();
+    setDzActive(false);
+    const files = e.dataTransfer?.files;
+    if (files && files.length) uploadPhotos(files);
+  }
+
+  /* CSV helpers */
   function parseCSV(text: string) {
     const lines = text.split(/\r?\n/).filter((l) => l.trim().length > 0);
     if (!lines.length) return { header: [] as string[], rows: [] as string[][] };
@@ -440,7 +475,7 @@ export default function CattleByTag({ tenantId }: { tenantId: string }) {
             const ix = indexOf(n);
             return ix >= 0 ? (cols[ix] || "").trim() : "";
           };
-          const tag = get("tag") || get("Tag") || get("TAG");
+          const tag = (get("tag") || "").trim();
           if (!tag) return null;
           return {
             tenant_id: tenantId,
@@ -455,7 +490,7 @@ export default function CattleByTag({ tenantId }: { tenantId: string }) {
         })
         .filter(Boolean) as any[];
 
-      if (mapped.length === 0) {
+      if (!mapped.length) {
         setImportMsg("No valid rows found (need a 'tag' column).");
         return;
       }
@@ -524,7 +559,7 @@ export default function CattleByTag({ tenantId }: { tenantId: string }) {
     URL.revokeObjectURL(url);
   }
 
-  /* Scanner */
+  /* scanner */
   function onScanKeyDown(e: React.KeyboardEvent<HTMLInputElement>) {
     if (e.key === "Enter") {
       const tag = scanValue.trim();
@@ -536,7 +571,7 @@ export default function CattleByTag({ tenantId }: { tenantId: string }) {
     }
   }
 
-  /* Reports */
+  /* reports */
   const filteredWeights = useMemo(() => {
     let arr = weights;
     if (from) arr = arr.filter((w) => w.weigh_date >= from);
@@ -567,7 +602,7 @@ export default function CattleByTag({ tenantId }: { tenantId: string }) {
     return Array.from(map.entries()).map(([product, count]) => ({ product, count }));
   }, [treats, from, to]);
 
-  /* PDF helpers */
+  /* PDF export */
   async function fetchImageAsDataURL(url: string): Promise<string | null> {
     try {
       const res = await fetch(url, { mode: "cors" });
@@ -592,7 +627,6 @@ export default function CattleByTag({ tenantId }: { tenantId: string }) {
     const marginX = 54, marginY = 54, line = 16;
     let y = marginY;
 
-    // Choose favorite photo: explicit selection → primary → first
     let favorite: PhotoRow | undefined;
     if (favForPdf && favForPdf !== "primary") {
       favorite = photos.find((p) => p.id === favForPdf);
@@ -600,14 +634,12 @@ export default function CattleByTag({ tenantId }: { tenantId: string }) {
       favorite = photos.find((p) => p.is_primary) || photos[0];
     }
 
-    // Title
     doc.setFont("helvetica", "bold");
     doc.setFontSize(18);
     doc.setTextColor("#004225");
     doc.text(`Cattle Detail — ${editing.tag}`, marginX, y);
     y += line * 1.5;
 
-    // Photo + details
     if (favorite?.photo_url) {
       const dataUrl = await fetchImageAsDataURL(favorite.photo_url);
       if (dataUrl) {
@@ -640,7 +672,6 @@ export default function CattleByTag({ tenantId }: { tenantId: string }) {
       y += line;
     }
 
-    // Weights
     doc.setFont("helvetica", "bold");
     doc.setFontSize(13);
     doc.setTextColor("#004225");
@@ -661,7 +692,6 @@ export default function CattleByTag({ tenantId }: { tenantId: string }) {
       });
     }
 
-    // Treatments
     y += 8;
     doc.setFont("helvetica", "bold");
     doc.setFontSize(13);
@@ -686,7 +716,6 @@ export default function CattleByTag({ tenantId }: { tenantId: string }) {
       });
     }
 
-    // Footer
     y += 12;
     doc.setFont("helvetica", "italic");
     doc.setFontSize(9);
@@ -696,7 +725,7 @@ export default function CattleByTag({ tenantId }: { tenantId: string }) {
     doc.save(`cattle_${editing.tag}.pdf`);
   }
 
-  /* ───────────────────────── Render ───────────────────────── */
+  /* ───────────────── Render ───────────────── */
   return (
     <Card>
       <CardHeader>
@@ -705,7 +734,7 @@ export default function CattleByTag({ tenantId }: { tenantId: string }) {
       <CardContent className="space-y-6">
         {/* Add / Search / CSV / Scan */}
         <div className="grid lg:grid-cols-3 gap-3">
-          {/* New Animal */}
+          {/* New animal */}
           <div className="border rounded-xl p-3 bg-white/70">
             <div className="grid grid-cols-2 gap-2">
               <div className="col-span-2">
@@ -958,7 +987,7 @@ export default function CattleByTag({ tenantId }: { tenantId: string }) {
               </div>
             </div>
 
-            {/* Photos (drag, favorite, export) */}
+            {/* Photos: upload, dropzone, progress, gallery */}
             <div className="mt-6 border rounded-xl p-4 bg-white/80">
               <div className="flex flex-wrap items-center justify-between gap-2">
                 <div className="font-medium">Photos</div>
@@ -976,7 +1005,6 @@ export default function CattleByTag({ tenantId }: { tenantId: string }) {
                     />
                   </label>
 
-                  {/* Favorite photo selection for PDF */}
                   <select
                     className="text-sm border rounded-md px-2 py-1"
                     value={String(favForPdf ?? "")}
@@ -996,6 +1024,37 @@ export default function CattleByTag({ tenantId }: { tenantId: string }) {
 
                   <Button size="sm" onClick={exportAnimalPdf}>Export PDF</Button>
                 </div>
+              </div>
+
+              <div
+                onDragOver={onDropZoneDragOver}
+                onDragLeave={onDropZoneDragLeave}
+                onDrop={onDropZoneDrop}
+                className={[
+                  "mt-3 w-full border-2 border-dashed rounded-xl p-6 text-center transition",
+                  dzActive ? "bg-emerald-50 border-emerald-400" : "bg-white/70 border-slate-300",
+                ].join(" ")}
+              >
+                <div className="text-sm text-slate-700">
+                  Drag & drop images here, or click “Upload Photos”
+                </div>
+                <div className="text-xs text-slate-500 mt-1">
+                  JPG, PNG. You can also drag to reorder after uploading.
+                </div>
+
+                {uploading && (
+                  <div className="mt-4">
+                    <div className="h-2 w-full bg-slate-200 rounded-full overflow-hidden">
+                      <div
+                        className="h-2 bg-emerald-600"
+                        style={{ width: `${uploadProgress}%` }}
+                      />
+                    </div>
+                    <div className="mt-1 text-xs text-slate-600">
+                      Uploading {uploadTotals.done}/{uploadTotals.total} ({uploadProgress}%)
+                    </div>
+                  </div>
+                )}
               </div>
 
               <div className="mt-3 grid grid-cols-2 md:grid-cols-4 lg:grid-cols-6 gap-3">
@@ -1046,7 +1105,7 @@ export default function CattleByTag({ tenantId }: { tenantId: string }) {
                 ))}
                 {photos.length === 0 && (
                   <div className="text-sm text-slate-600 col-span-full">
-                    No photos yet. Use “Upload Photos” to add images for this animal.
+                    No photos yet. Use drag-and-drop or “Upload Photos” to add images.
                   </div>
                 )}
               </div>
@@ -1228,7 +1287,7 @@ export default function CattleByTag({ tenantId }: { tenantId: string }) {
   );
 }
 
-/* ───────────────────────── Subcomponents ───────────────────────── */
+/* ───────────────── Subcomponents ───────────────── */
 
 function WeightEditor({
   tenantId,
@@ -1340,7 +1399,9 @@ function TreatEditor({
         </div>
         <div className="md:col-span-5">
           <Button
-            onClick={() => onAdd(animalId, date, product || undefined, dose || undefined, notes || undefined)}
+            onClick={() =>
+              onAdd(animalId, date, product || undefined, dose || undefined, notes || undefined)
+            }
           >
             Add Treatment
           </Button>
