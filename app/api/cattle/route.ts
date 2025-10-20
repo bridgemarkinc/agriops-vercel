@@ -1,3 +1,4 @@
+// app/api/cattle/route.ts
 export const runtime = "nodejs";          // ensure Node (not Edge)
 export const dynamic = "force-dynamic";   // don't cache
 
@@ -21,7 +22,7 @@ const admin = createClient(SUPABASE_URL, SERVICE_ROLE_KEY, {
   auth: { persistSession: false },
 });
 
-/* Make one primary + sync primary_photo_url on cattle */
+/* Internal: set one primary + sync primary_photo_url on cattle */
 async function setPrimaryInternal(
   tenant_id: string,
   animal_id: number,
@@ -55,7 +56,7 @@ export async function POST(req: Request) {
   try {
     const ctype = req.headers.get("content-type") || "";
 
-    /* ───────── A. multipart/form-data (file upload via service role) ───────── */
+    /* ───────── A. multipart/form-data: direct file upload to Storage ───────── */
     if (ctype.includes("multipart/form-data")) {
       const form = await req.formData();
       const action = String(form.get("action") || "");
@@ -73,72 +74,73 @@ export async function POST(req: Request) {
         return err("tenant_id, animal_id, tag, file required");
       }
 
-      // Build a unique path: tenant/animal/tag/timestamp_filename
-      const ts = Date.now();
-      const safeName = file.name.replace(/[^\w.\-]+/g, "_");
-      const filePath = `${tenant_id}/${animal_id}/${tag}/${ts}_${safeName}`;
+      // Build a safe path and upload
+      const ext = (file.name.split(".").pop() || "jpg").toLowerCase();
+      const safeTag = tag.replace(/[^a-z0-9_-]/gi, "_");
+      const path = `${tenant_id}/${safeTag}/${Date.now()}_${Math.random()
+        .toString(36)
+        .slice(2)}.${ext}`;
 
-      // Upload to Storage with service role
-      const arrayBuf = await file.arrayBuffer();
       const { error: upErr } = await admin.storage
         .from(PHOTOS_BUCKET)
-        .upload(filePath, new Uint8Array(arrayBuf), {
-          upsert: false,
-          contentType: file.type || "application/octet-stream",
-        });
+        .upload(path, file, { upsert: true });
       if (upErr) throw upErr;
 
-      // Public URL
-      const { data: pub } = admin.storage.from(PHOTOS_BUCKET).getPublicUrl(filePath);
-      const photo_url = pub?.publicUrl || "";
-      const photo_path = filePath;
+      const { data: pub } = admin.storage.from(PHOTOS_BUCKET).getPublicUrl(path);
+      const photo_url = pub?.publicUrl;
+      if (!photo_url) return err("failed to get public URL");
 
-      // Determine next sort_order
+      // Insert DB row
       const { data: existing, error: exErr } = await admin
         .from("agriops_cattle_photos")
         .select("id")
         .eq("tenant_id", tenant_id)
         .eq("animal_id", animal_id);
       if (exErr) throw exErr;
-      const sort_order = (existing?.length || 0);
 
-      // Insert row
-      const { data: row, error: insErr } = await admin
+      const sort_order = existing?.length ?? 0;
+
+      const { data: ins, error: insErr } = await admin
         .from("agriops_cattle_photos")
         .insert({
-          tenant_id, animal_id, tag, photo_url, photo_path,
-          is_primary: false, sort_order,
+          tenant_id,
+          animal_id,
+          tag,
+          photo_url,
+          photo_path: path,
+          is_primary: false,
+          sort_order,
         })
-        .select("*")
+        .select("id")
         .single();
       if (insErr) throw insErr;
 
-      // Set primary if asked or first image
+      // Make first pic primary or respect explicit flag
       if (set_primary || (existing?.length ?? 0) === 0) {
-        await setPrimaryInternal(tenant_id, animal_id, row.id, photo_url);
+        await setPrimaryInternal(tenant_id, animal_id, ins.id, photo_url);
       }
 
-      return ok({ id: row.id, photo_url, photo_path });
+      return ok({ id: ins.id, photo_url, photo_path: path });
     }
 
-    /* ───────── B. JSON actions (normal API) ───────── */
+    /* ───────── B. JSON actions ───────── */
     const body = await req.json();
     const action = String(body?.action || "");
 
-    /* Debug: prove service key is loaded in Production */
+    // Debug
     if (action === "debugRole") {
-      return NextResponse.json({
-        ok: true,
-        version: "cattle-route v1",
+      return ok({
+        version: "cattle-route v2",
         usingServiceRoleKey: !!process.env.SUPABASE_SERVICE_ROLE_KEY,
         urlSet: !!process.env.NEXT_PUBLIC_SUPABASE_URL,
       });
     }
 
-    /* Animals basic */
+    /* Animals */
     if (action === "upsertAnimal") {
       const { payload } = body as { payload: any };
-      if (!payload?.tenant_id || !payload?.tag) return err("payload.tenant_id and payload.tag are required");
+      if (!payload?.tenant_id || !payload?.tag)
+        return err("payload.tenant_id and payload.tag are required");
       const { error } = await admin
         .from("agriops_cattle")
         .upsert(payload, { onConflict: "tenant_id,tag" } as any);
@@ -147,9 +149,17 @@ export async function POST(req: Request) {
     }
 
     if (action === "updateAnimal") {
-      const { id, tenant_id, patch } = body as { id: number; tenant_id: string; patch: any };
+      const { id, tenant_id, patch } = body as {
+        id: number;
+        tenant_id: string;
+        patch: any;
+      };
       if (!id || !tenant_id) return err("id and tenant_id required");
-      const { error } = await admin.from("agriops_cattle").update(patch).eq("id", id).eq("tenant_id", tenant_id);
+      const { error } = await admin
+        .from("agriops_cattle")
+        .update(patch)
+        .eq("id", id)
+        .eq("tenant_id", tenant_id);
       if (error) throw error;
       return ok({ updated: true });
     }
@@ -171,7 +181,11 @@ export async function POST(req: Request) {
         return err("tenant_id, animal_id, weigh_date, weight_lb required");
       }
       const { error } = await admin.from("agriops_cattle_weights").insert({
-        tenant_id, animal_id, weigh_date, weight_lb, notes: notes || null,
+        tenant_id,
+        animal_id,
+        weigh_date,
+        weight_lb,
+        notes: notes || null,
       });
       if (error) throw error;
       return ok({ added: true });
@@ -179,25 +193,31 @@ export async function POST(req: Request) {
 
     if (action === "addTreatment") {
       const { tenant_id, animal_id, treat_date, product, dose, notes } = body;
-      if (!tenant_id || !animal_id || !treat_date) return err("tenant_id, animal_id, treat_date required");
+      if (!tenant_id || !animal_id || !treat_date)
+        return err("tenant_id, animal_id, treat_date required");
       const { error } = await admin.from("agriops_cattle_treatments").insert({
-        tenant_id, animal_id, treat_date, product: product || null, dose: dose || null, notes: notes || null,
+        tenant_id,
+        animal_id,
+        treat_date,
+        product: product || null,
+        dose: dose || null,
+        notes: notes || null,
       });
       if (error) throw error;
       return ok({ added: true });
     }
 
-    /* Processing (optional) */
+    /* Processing */
     if (action === "sendToProcessing") {
-      const {
-        tenant_id, animal_id, tag,
-        sent_date, processor, transport_id, live_weight_lb, notes
-      } = body;
+      const { tenant_id, animal_id, tag, sent_date, processor, transport_id, live_weight_lb, notes } = body;
       if (!tenant_id || !animal_id || !tag || !sent_date) {
         return err("tenant_id, animal_id, tag, sent_date required");
       }
       const { error } = await admin.from("agriops_cattle_processing").insert({
-        tenant_id, animal_id, tag, sent_date,
+        tenant_id,
+        animal_id,
+        tag,
+        sent_date,
         processor: processor || null,
         transport_id: transport_id || null,
         live_weight_lb: live_weight_lb ?? null,
@@ -243,13 +263,18 @@ export async function POST(req: Request) {
         .eq("tenant_id", tenant_id)
         .eq("animal_id", animal_id);
       if (exErr) throw exErr;
-      const sort_order = (existing?.length || 0);
+      const sort_order = existing?.length ?? 0;
 
       const { data, error } = await admin
         .from("agriops_cattle_photos")
         .insert({
-          tenant_id, animal_id, tag, photo_url, photo_path,
-          is_primary: false, sort_order,
+          tenant_id,
+          animal_id,
+          tag,
+          photo_url,
+          photo_path,
+          is_primary: false,
+          sort_order,
         })
         .select("*")
         .single();
@@ -263,7 +288,11 @@ export async function POST(req: Request) {
     }
 
     if (action === "setPrimaryPhoto") {
-      const { tenant_id, animal_id, id } = body as { tenant_id: string; animal_id: number; id: number };
+      const { tenant_id, animal_id, id } = body as {
+        tenant_id: string;
+        animal_id: number;
+        id: number;
+      };
       if (!tenant_id || !animal_id || !id) return err("tenant_id, animal_id, id required");
 
       const { data: photo, error: fErr } = await admin
@@ -282,9 +311,13 @@ export async function POST(req: Request) {
 
     if (action === "deleteAnimalPhoto") {
       const { tenant_id, animal_id, id, photo_path } = body as {
-        tenant_id: string; animal_id: number; id: number; photo_path: string;
+        tenant_id: string;
+        animal_id: number;
+        id: number;
+        photo_path: string;
       };
-      if (!tenant_id || !animal_id || !id || !photo_path) return err("tenant_id, animal_id, id, photo_path required");
+      if (!tenant_id || !animal_id || !id || !photo_path)
+        return err("tenant_id, animal_id, id, photo_path required");
 
       const { error } = await admin
         .from("agriops_cattle_photos")
@@ -300,7 +333,9 @@ export async function POST(req: Request) {
 
     if (action === "reorderAnimalPhotos") {
       const { tenant_id, animal_id, ordered_ids } = body as {
-        tenant_id: string; animal_id: number; ordered_ids: number[];
+        tenant_id: string;
+        animal_id: number;
+        ordered_ids: number[];
       };
       if (!tenant_id || !animal_id || !Array.isArray(ordered_ids)) {
         return err("tenant_id, animal_id, ordered_ids[] are required");
