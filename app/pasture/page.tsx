@@ -1,7 +1,13 @@
 "use client";
 
-export const dynamic = "force-dynamic"; // no static prerender
-export const revalidate = 0;
+"use client";
+
+// Force runtime to avoid static prerender and caching for this page
+export const dynamic = "force-dynamic";
+export const revalidate = 0;        // <-- must be a number or false
+export const fetchCache = "force-no-store";
+export const runtime = "nodejs";
+
 
 import React, { useEffect, useMemo, useState } from "react";
 import { useTenant } from "@/components/tenant";
