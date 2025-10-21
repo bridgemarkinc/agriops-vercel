@@ -860,61 +860,74 @@ export default function CattleByTag({ tenantId }: { tenantId: string }) {
               )}
             </div>
 
-            {/* List */}
-            <div className="overflow-auto mt-3 border rounded-lg">
-              <table className="w-full text-sm">
-                <thead className="bg-slate-100">
-                  <tr>
-                    <th className="text-left p-2">Photo</th>
-                    <th className="text-left p-2">Tag</th>
-                    <th className="text-left p-2">Name</th>
-                    <th className="text-left p-2">Sex</th>
-                    <th className="text-left p-2">Breed</th>
-                    <th className="text-left p-2">Birth</th>
-                    <th className="text-left p-2">Paddock</th>
-                    <th className="text-left p-2">Status</th>
-                    <th className="text-right p-2 w-28">Actions</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {animals.map((a) => (
-                    <tr key={a.id || a.tag} className="border-t">
-                      <td className="p-2">
-                        {a.primary_photo_url ? (
-                          <img
-                            src={a.primary_photo_url}
-                            alt={a.tag}
-                            className="h-10 w-10 object-cover rounded-md border"
-                          />
-                        ) : (
-                          <div className="h-10 w-10 rounded-md border bg-slate-100 flex items-center justify-center text-[10px] text-slate-500">
-                            No photo
-                          </div>
-                        )}
-                      </td>
-                      <td className="p-2 font-mono">{a.tag}</td>
-                      <td className="p-2">{a.name}</td>
-                      <td className="p-2">{a.sex}</td>
-                      <td className="p-2">{a.breed}</td>
-                      <td className="p-2">{a.birth_date}</td>
-                      <td className="p-2">{a.current_paddock}</td>
-                      <td className="p-2">{a.status}</td>
-                      <td className="p-2 text-right">
-                        <Button size="sm" variant="outline" onClick={() => startEdit(a)}>
-                          Open
-                        </Button>
-                      </td>
-                    </tr>
-                  ))}
-                  {animals.length === 0 && (
+            {/* List (scrollable ~10 rows) */}
+            <div className="mt-3 border rounded-lg">
+              {/* Header row */}
+              <div className="flex items-center justify-between px-2 py-2 bg-slate-50 border-b">
+                <div className="text-sm font-medium">
+                  Inventory: {animals.length} {animals.length === 1 ? "animal" : "animals"}
+                </div>
+                <div className="text-xs text-slate-500">
+                  Showing ~10 rows — scroll to see more
+                </div>
+              </div>
+
+              {/* Scroll container */}
+              <div className="max-h-[520px] overflow-y-auto">
+                <table className="w-full text-sm">
+                  <thead className="bg-slate-100 sticky top-0 z-10">
                     <tr>
-                      <td className="p-2" colSpan={9}>
-                        No cattle yet. Add your first animal on the left.
-                      </td>
+                      <th className="text-left p-2">Photo</th>
+                      <th className="text-left p-2">Tag</th>
+                      <th className="text-left p-2">Name</th>
+                      <th className="text-left p-2">Sex</th>
+                      <th className="text-left p-2">Breed</th>
+                      <th className="text-left p-2">Birth</th>
+                      <th className="text-left p-2">Paddock</th>
+                      <th className="text-left p-2">Status</th>
+                      <th className="text-right p-2 w-28">Actions</th>
                     </tr>
-                  )}
-                </tbody>
-              </table>
+                  </thead>
+                  <tbody>
+                    {animals.map((a) => (
+                      <tr key={a.id || a.tag} className="border-t">
+                        <td className="p-2">
+                          {a.primary_photo_url ? (
+                            <img
+                              src={a.primary_photo_url}
+                              alt={a.tag}
+                              className="h-10 w-10 object-cover rounded-md border"
+                            />
+                          ) : (
+                            <div className="h-10 w-10 rounded-md border bg-slate-100 flex items-center justify-center text-[10px] text-slate-500">
+                              No photo
+                            </div>
+                          )}
+                        </td>
+                        <td className="p-2 font-mono">{a.tag}</td>
+                        <td className="p-2">{a.name}</td>
+                        <td className="p-2">{a.sex}</td>
+                        <td className="p-2">{a.breed}</td>
+                        <td className="p-2">{a.birth_date}</td>
+                        <td className="p-2">{a.current_paddock}</td>
+                        <td className="p-2">{a.status}</td>
+                        <td className="p-2 text-right">
+                          <Button size="sm" variant="outline" onClick={() => startEdit(a)}>
+                            Open
+                          </Button>
+                        </td>
+                      </tr>
+                    ))}
+                    {animals.length === 0 && (
+                      <tr>
+                        <td className="p-2" colSpan={9}>
+                          No cattle yet. Add your first animal on the left.
+                        </td>
+                      </tr>
+                    )}
+                  </tbody>
+                </table>
+              </div>
             </div>
           </div>
         </div>
