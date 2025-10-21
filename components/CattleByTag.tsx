@@ -143,7 +143,18 @@ export default function CattleByTag({ tenantId }: { tenantId: string }) {
     live_weight_lb: undefined,
     notes: "",
   });
-
+// Distinct paddock names (for picker)
+const paddockNames = useMemo(
+  () =>
+    Array.from(
+      new Set(
+        animals
+          .map((a) => (a.current_paddock || "").trim())
+          .filter((x) => x.length > 0)
+      )
+    ).sort((a, b) => a.localeCompare(b)),
+  [animals]
+);
   /* helpers */
   async function api(action: string, body: any) {
     const res = await fetch("/api/cattle", {
@@ -984,10 +995,19 @@ export default function CattleByTag({ tenantId }: { tenantId: string }) {
               <div>
                 <Label>Paddock</Label>
                 <Input
-                  value={editing.current_paddock || ""}
-                  onChange={(e) => setEditing({ ...editing, current_paddock: e.target.value })}
-                />
-              </div>
+                  list="paddockList"
+    value={draft.current_paddock || ""}
+    onChange={(e) =>
+      setDraft({ ...draft, current_paddock: e.target.value })
+    }
+    placeholder="e.g., North 1"
+  />
+  <datalist id="paddockList">
+    {paddockNames.map((n) => (
+      <option key={n} value={n} />
+    ))}
+  </datalist>
+</div>
               <div>
                 <Label>Status</Label>
                 <Input

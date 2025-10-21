@@ -5,6 +5,16 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { createClient, SupabaseClient } from "@supabase/supabase-js";
+
+const SUPABASE = {
+  url: process.env.NEXT_PUBLIC_SUPABASE_URL || "",
+  anon: process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || "",
+};
+let supabase: SupabaseClient | null = null;
+if (typeof window !== "undefined" && SUPABASE.url.startsWith("http")) {
+  supabase = createClient(SUPABASE.url, SUPABASE.anon);
+}
 
 /** ───────────────────────── Types ───────────────────────── */
 type SeedMix = {
@@ -41,7 +51,34 @@ type UnitCosts = {
 
 export default function GrazingPlanner({ tenantId }: { tenantId: string }) {
   /** ───────────────────────── Seed mixes per zone (editable) ───────────────────────── */
+  const [paddockCounts, setPaddockCounts] = useState<Record<string, number>>({});
+const [countLoading, setCountLoading] = useState(false);
+
+async function refreshHeadCounts() {
+  if (!supabase) return;
+  setCountLoading(true);
+  const { data, error } = await supabase
+    .from("agriops_cattle")
+    .select("current_paddock")
+    .eq("tenant_id", tenantId);
+
+  setCountLoading(false);
+  if (error) {
+    console.error(error);
+    return;
+  }
+
+  const map: Record<string, number> = {};
+  (data || []).forEach((row: any) => {
+    const key = (row.current_paddock || "").trim();
+    if (!key) return;
+    map[key] = (map[key] || 0) + 1;
+  });
+  setPaddockCounts(map);
+}
+
   const [mixesByZone, setMixesByZone] = useState<Record<string, SeedMix[]>>({
+    
     "Zone 5": [
       { name: "Cool-season pasture (orchardgrass + clover)", suggested_total_rate_lbs_ac: 12, notes: "OG 8 + Clover 4" },
       { name: "Fescue + White Clover", suggested_total_rate_lbs_ac: 10 },
@@ -53,6 +90,7 @@ export default function GrazingPlanner({ tenantId }: { tenantId: string }) {
     "Zone 7": [
       { name: "Bermuda overseed (ryegrass)", suggested_total_rate_lbs_ac: 20 },
     ],
+    
   });
 
   /** ───────────────────────── Defaults ───────────────────────── */
@@ -298,6 +336,7 @@ export default function GrazingPlanner({ tenantId }: { tenantId: string }) {
                     <th className="text-left p-2">Acres</th>
                     <th className="text-left p-2">Zone</th>
                     <th className="text-left p-2">Mix</th>
+                    <th className="text-right p-2">Head</th>
                     <th className="text-right p-2">Est. Cost</th>
                     <th className="text-right p-2 w-40">Actions</th>
                   </tr>
@@ -315,6 +354,9 @@ export default function GrazingPlanner({ tenantId }: { tenantId: string }) {
                         <td className="p-2">{p.acres}</td>
                         <td className="p-2">{p.seeding.zone}</td>
                         <td className="p-2">{mixName}</td>
+                        <td className="p-2 text-right">
+  {paddockCounts[p.name] ?? 0}
+</td>
                         <td className="p-2 text-right">{fmt(costs.total)}</td>
                         <td className="p-2 text-right">
                           <div className="flex gap-2 justify-end">
@@ -326,6 +368,11 @@ export default function GrazingPlanner({ tenantId }: { tenantId: string }) {
                             >
                               Edit Seeding &amp; Amendments
                             </Button>
+                            <div className="flex gap-2 items-center">
+  <Button variant="outline" size="sm" onClick={refreshHeadCounts} disabled={countLoading}>
+    {countLoading ? "Counting…" : "Refresh Head Counts"}
+  </Button>
+</div>
                           </div>
                         </td>
                       </tr>
