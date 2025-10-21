@@ -2,13 +2,13 @@
 "use client";
 
 export const dynamic = "force-dynamic";
-export const revalidate = 0;
+export const revalidate = 0;              // no static caching
 export const fetchCache = "force-no-store";
 export const runtime = "nodejs";
 
 import React from "react";
-import Home from "@/components/Home"; // or whatever your main component is
+import AgriOps from "@/components/AgriOps";  // <-- use the real file you have
 
 export default function Page() {
-  return <Home />;
+  return <AgriOps />;
 }
