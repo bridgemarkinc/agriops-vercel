@@ -1,743 +1,704 @@
 "use client";
 
-import React, { useMemo, useState } from "react";
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import React from "react";
+import { createClient } from "@supabase/supabase-js";
+import { Card, CardHeader, CardContent, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { createClient, SupabaseClient } from "@supabase/supabase-js";
 
-const SUPABASE = {
-  url: process.env.NEXT_PUBLIC_SUPABASE_URL || "",
-  anon: process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || "",
-};
-let supabase: SupabaseClient | null = null;
-if (typeof window !== "undefined" && SUPABASE.url.startsWith("http")) {
-  supabase = createClient(SUPABASE.url, SUPABASE.anon);
-}
-
-/** ───────────────────────── Types ───────────────────────── */
-type SeedMix = {
-  name: string;
-  suggested_total_rate_lbs_ac: number; // total lbs/ac across the mix
-  notes?: string;
-};
-
-type SeedingPlan = {
-  zone: string;
-  mixIndex: number; // index into mixesByZone[zone]
-  seedRate: number; // lbs/ac actually applied (can override suggested)
-  seedPrice: number; // $/lb (for the whole mix average)
-  nRate: number; // lbs/ac of Nitrogen
-  pRate: number; // lbs/ac of P2O5
-  kRate: number; // lbs/ac of K2O
-  limeRate: number; // tons/ac
-};
-
-type Paddock = {
-  name: string;
-  acres: number;
-  notes?: string;
-  seeding: SeedingPlan;
-};
-
-type UnitCosts = {
-  seed_per_lb: number; // global default (each paddock has its own seedPrice too)
-  N: number; // $/lb N
-  P2O5: number; // $/lb P2O5
-  K2O: number; // $/lb K2O
-  lime_ton: number; // $/ton
-};
-
-export default function GrazingPlanner({ tenantId }: { tenantId: string }) {
-  /** ───────────────────────── Seed mixes per zone (editable) ───────────────────────── */
-  const [paddockCounts, setPaddockCounts] = useState<Record<string, number>>({});
-const [countLoading, setCountLoading] = useState(false);
-
-async function refreshHeadCounts() {
-  if (!supabase) return;
-  setCountLoading(true);
-  const { data, error } = await supabase
-    .from("agriops_cattle")
-    .select("current_paddock")
-    .eq("tenant_id", tenantId);
-
-  setCountLoading(false);
-  if (error) {
-    console.error(error);
-    return;
-  }
-
-  const map: Record<string, number> = {};
-  (data || []).forEach((row: any) => {
-    const key = (row.current_paddock || "").trim();
-    if (!key) return;
-    map[key] = (map[key] || 0) + 1;
-  });
-  setPaddockCounts(map);
-}
-
-  const [mixesByZone, setMixesByZone] = useState<Record<string, SeedMix[]>>({
-    
-    "Zone 5": [
-      { name: "Cool-season pasture (orchardgrass + clover)", suggested_total_rate_lbs_ac: 12, notes: "OG 8 + Clover 4" },
-      { name: "Fescue + White Clover", suggested_total_rate_lbs_ac: 10 },
-    ],
-    "Zone 6": [
-      { name: "Perennial rye + Clover", suggested_total_rate_lbs_ac: 18 },
-      { name: "Warm-season annual (sorghum-sudan)", suggested_total_rate_lbs_ac: 25 },
-    ],
-    "Zone 7": [
-      { name: "Bermuda overseed (ryegrass)", suggested_total_rate_lbs_ac: 20 },
-    ],
-    
-  });
-
-  /** ───────────────────────── Defaults ───────────────────────── */
-  const defaultSeeding = (zone = "Zone 6"): SeedingPlan => {
-    const mixes = mixesByZone[zone] || [];
-    const first = mixes[0];
-    return {
-      zone,
-      mixIndex: 0,
-      seedRate: first ? first.suggested_total_rate_lbs_ac : 15,
-      seedPrice: 2.75, // $/lb average cost (per paddock, editable)
-      nRate: 40,
-      pRate: 20,
-      kRate: 40,
-      limeRate: 0.5,
-    };
-  };
-
-  /** ───────────────────────── Paddocks ───────────────────────── */
-  const [paddocks, setPaddocks] = useState<Paddock[]>([
-    { name: "North 1", acres: 12, notes: "", seeding: defaultSeeding("Zone 6") },
-    { name: "North 2", acres: 9, notes: "", seeding: defaultSeeding("Zone 6") },
-  ]);
-
-  const [newPaddock, setNewPaddock] = useState<{ name: string; acres: string }>({
-    name: "",
-    acres: "",
-  });
-
-  function addPaddock() {
-    const acresNum = Number(newPaddock.acres || 0);
-    if (!newPaddock.name.trim() || acresNum <= 0) {
-      alert("Enter a paddock name and positive acres.");
-      return;
-    }
-    setPaddocks((prev) => [
-      ...prev,
-      { name: newPaddock.name.trim(), acres: acresNum, seeding: defaultSeeding() },
-    ]);
-    setNewPaddock({ name: "", acres: "" });
-  }
-
-  function updatePaddockBase(i: number, patch: Partial<Paddock>) {
-    setPaddocks((prev) => {
-      const next = [...prev];
-      next[i] = { ...next[i], ...patch };
-      return next;
-    });
-  }
-
-  function updatePaddockSeeding(i: number, patch: Partial<SeedingPlan>) {
-    setPaddocks((prev) => {
-      const next = [...prev];
-      next[i] = { ...next[i], seeding: { ...next[i].seeding, ...patch } };
-      return next;
-    });
-  }
-
-  /** ───────────────────────── Editor state ───────────────────────── */
-  const [editSeedIdx, setEditSeedIdx] = useState<number | null>(null);
-
-  /** ───────────────────────── Global Unit Costs ───────────────────────── */
-  const [unitCosts, setUnitCosts] = useState<UnitCosts>({
-    seed_per_lb: 2.75, // only used as a default for NEW paddocks; each paddock has its own seedPrice
-    N: 0.80,
-    P2O5: 0.90,
-    K2O: 0.60,
-    lime_ton: 45,
-  });
-
-  /** ───────────────────────── Top “Grazing Planner” knobs ───────────────────────── */
-  const [herd, setHerd] = useState({
-    head: 45,
-    avgWeightLb: 1200,
-    intakePctBW: 2.5, // % body weight/day
-  });
-  const [horizonDays, setHorizonDays] = useState(30); // planning window
-
-  const dailyIntakeLb = useMemo(() => {
-    const perHead = (herd.avgWeightLb || 0) * (herd.intakePctBW / 100);
-    return perHead * (herd.head || 0);
-  }, [herd]);
-
-  const projectAcres = useMemo(() => paddocks.reduce((s, p) => s + p.acres, 0), [paddocks]);
-
-  /** ───────────────────────── Calculations ───────────────────────── */
-  function paddockCosts(p: Paddock) {
-    const s = p.seeding;
-    const seedCost = s.seedRate * s.seedPrice * p.acres;
-    const nCost = s.nRate * unitCosts.N * p.acres;
-    const pCost = s.pRate * unitCosts.P2O5 * p.acres;
-    const kCost = s.kRate * unitCosts.K2O * p.acres;
-    const limeCost = s.limeRate * unitCosts.lime_ton * p.acres;
-    const total = seedCost + nCost + pCost + kCost + limeCost;
-    return { seedCost, nCost, pCost, kCost, limeCost, total };
-  }
-
-  const projectTotals = useMemo(() => {
-    return paddocks.reduce(
-      (acc, p) => {
-        const c = paddockCosts(p);
-        acc.acres += p.acres;
-        acc.seed += c.seedCost;
-        acc.n += c.nCost;
-        acc.p += c.pCost;
-        acc.k += c.kCost;
-        acc.lime += c.limeCost;
-        acc.total += c.total;
-        return acc;
-      },
-      { acres: 0, seed: 0, n: 0, p: 0, k: 0, lime: 0, total: 0 }
-    );
-  }, [paddocks, unitCosts]);
-
-  const fmt = (n: number) =>
-    n.toLocaleString(undefined, { style: "currency", currency: "USD", maximumFractionDigits: 0 });
-
-  /** ───────────────────────── UI Helpers ───────────────────────── */
-  function addCustomMix(zone: string, mix: SeedMix) {
-    setMixesByZone((prev) => {
-      const arr = prev[zone] ? [...prev[zone]] : [];
-      arr.push(mix);
-      return { ...prev, [zone]: arr };
-    });
-  }
-
-  /** ───────────────────────── Render ───────────────────────── */
+/** Local, minimal textarea to avoid missing shadcn import */
+function Textarea(props: React.TextareaHTMLAttributes<HTMLTextAreaElement>) {
+  const { className, ...rest } = props;
   return (
-    <div className="grid md:grid-cols-3 gap-6">
-      {/* Left — Planner (TOP) + Paddocks + Editor */}
-      <div className="md:col-span-2 space-y-6">
-        {/* ── TOP: Grazing Planner block ── */}
-        <Card>
-          <CardHeader>
-            <CardTitle>Grazing Planner</CardTitle>
-          </CardHeader>
-          <CardContent className="space-y-4">
-            <div className="grid sm:grid-cols-4 gap-3">
+    <textarea
+      {...rest}
+      className={[
+        "flex min-h-[80px] w-full rounded-md border border-slate-300 bg-white px-3 py-2 text-sm",
+        "placeholder:text-slate-400 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-slate-950/5",
+        className || "",
+      ].join(" ")}
+    />
+  );
+}
+
+/* ───────────────────────── Supabase client (browser reads only) ───────────────────────── */
+const supabase = createClient(
+  process.env.NEXT_PUBLIC_SUPABASE_URL!,
+  process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!
+);
+
+/* ───────────────────────── Types ───────────────────────── */
+type Paddock = {
+  id: number;
+  tenant_id: string;
+  name: string;
+  area_ac: number | null;
+  zone?: string | null;
+  notes?: string | null;
+};
+
+type SeedMix = {
+  id: number;
+  tenant_id: string;
+  name: string;
+  notes?: string | null;
+};
+
+type SeedMixItem = {
+  id: number;
+  tenant_id: string;
+  mix_id: number;
+  species: string;
+  lbs_per_ac: number;
+};
+
+type PaddockSeeding = {
+  id?: number;
+  tenant_id: string;
+  paddock_id: number;
+  seed_mix_id?: number | null;
+  seeding_rate_lbs_ac?: number | null;
+  fert_n_lb_ac?: number | null;
+  fert_p_lb_ac?: number | null;
+  fert_k_lb_ac?: number | null;
+  lime_ton_ac?: number | null;
+  last_seeded_date?: string | null;
+  next_reseed_window?: string | null;
+  notes?: string | null;
+  // Optional per-paddock custom species
+  custom_species?: Array<{ species: string; lbs_per_ac: number }>;
+};
+
+/* ───────────────────────── API helper (server writes) ───────────────────────── */
+async function apiCare<T = any>(action: string, body: Record<string, any>) {
+  const res = await fetch("/api/care", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ action, ...body }),
+  });
+  const json = await res.json();
+  if (!res.ok || !json.ok) throw new Error(json.error || "Request failed");
+  return json.data as T;
+}
+
+/* ───────────────────────── Component ───────────────────────── */
+export default function GrazingPlanner({ tenantId }: { tenantId: string }) {
+  const [paddocks, setPaddocks] = React.useState<Paddock[]>([]);
+  const [paddockCounts, setPaddockCounts] = React.useState<Record<string, number>>({});
+  const [mixes, setMixes] = React.useState<SeedMix[]>([]);
+  const [mixItems, setMixItems] = React.useState<Record<number, SeedMixItem[]>>({});
+  const [loadingCounts, setLoadingCounts] = React.useState(false);
+
+  // Planner inputs
+  const [avgAnimalWt, setAvgAnimalWt] = React.useState(1200);
+  const [intakePctBW, setIntakePctBW] = React.useState(2.5);
+  const [growthLbDmAcDay, setGrowthLbDmAcDay] = React.useState(40);
+  const [targetResidual, setTargetResidual] = React.useState(1500);
+  const [horizonDays, setHorizonDays] = React.useState(7);
+
+  // Drawer for paddock seeding/amendments
+  const [drawerOpen, setDrawerOpen] = React.useState(false);
+  const [activePaddock, setActivePaddock] = React.useState<Paddock | null>(null);
+  const [padForm, setPadForm] = React.useState<PaddockSeeding | null>(null);
+  const [savingPad, setSavingPad] = React.useState(false);
+
+  // Seed mix CRUD draft
+  const [newMixName, setNewMixName] = React.useState("");
+  const [newMixNotes, setNewMixNotes] = React.useState("");
+
+  // Derived herd size from counts
+  const herdSize = React.useMemo(
+    () => Object.values(paddockCounts).reduce((a, b) => a + b, 0),
+    [paddockCounts]
+  );
+  const herdIntakeLbPerDay = Math.round(herdSize * avgAnimalWt * (intakePctBW / 100));
+  const totalArea = paddocks.reduce((sum, p) => sum + (p.area_ac || 0), 0);
+  const dailyGrowthFeedLb = Math.round(totalArea * growthLbDmAcDay);
+  const netBalanceLb = dailyGrowthFeedLb - herdIntakeLbPerDay;
+
+  /* ───────── Loaders ───────── */
+  async function loadPaddocks() {
+    const { data, error } = await supabase
+      .from("agriops_paddocks")
+      .select("*")
+      .eq("tenant_id", tenantId)
+      .order("name", { ascending: true });
+    if (!error) setPaddocks((data || []) as Paddock[]);
+  }
+
+  async function loadCounts() {
+    setLoadingCounts(true);
+    const { data, error } = await supabase
+      .from("agriops_cattle")
+      .select("current_paddock")
+      .eq("tenant_id", tenantId);
+    setLoadingCounts(false);
+    if (error) return;
+
+    const counts: Record<string, number> = {};
+    (data || []).forEach((row: any) => {
+      const paddock = (row.current_paddock || "").trim();
+      if (!paddock) return;
+      counts[paddock] = (counts[paddock] || 0) + 1;
+    });
+    setPaddockCounts(counts);
+  }
+
+  async function loadMixes() {
+    const data = await apiCare<SeedMix[]>("listSeedMixes", { tenant_id: tenantId });
+    setMixes(data || []);
+    // load mix items per mix
+    const byMix: Record<number, SeedMixItem[]> = {};
+    for (const m of data || []) {
+      const items = await apiCare<SeedMixItem[]>("listSeedMixItems", {
+        tenant_id: tenantId,
+        mix_id: m.id,
+      });
+      byMix[m.id] = items || [];
+    }
+    setMixItems(byMix);
+  }
+
+  React.useEffect(() => {
+    loadPaddocks();
+    loadCounts();
+    loadMixes();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [tenantId]);
+
+  /* ───────── Seed Mix CRUD ───────── */
+  async function addMix() {
+    if (!newMixName.trim()) return;
+    await apiCare("upsertSeedMix", {
+      tenant_id: tenantId,
+      payload: { name: newMixName.trim(), notes: newMixNotes || null },
+    });
+    setNewMixName("");
+    setNewMixNotes("");
+    await loadMixes();
+  }
+  async function deleteMix(mixId: number) {
+    if (!confirm("Delete this seed mix?")) return;
+    await apiCare("deleteSeedMix", { tenant_id: tenantId, id: mixId });
+    await loadMixes();
+  }
+  async function addMixItem(mixId: number) {
+    const species = prompt("Species (e.g., Orchardgrass)")?.trim();
+    if (!species) return;
+    const lbsStr = prompt("Seeding rate (lbs/ac)")?.trim() || "0";
+    const lbs = Number(lbsStr || 0);
+    await apiCare("upsertSeedMixItem", {
+      tenant_id: tenantId,
+      payload: { mix_id: mixId, species, lbs_per_ac: lbs },
+    });
+    await loadMixes();
+  }
+  async function removeMixItem(itemId: number) {
+    if (!confirm("Remove this species from the mix?")) return;
+    await apiCare("deleteSeedMixItem", { tenant_id: tenantId, id: itemId });
+    await loadMixes();
+  }
+
+  /* ───────── Paddock Drawer ───────── */
+  async function openDrawer(p: Paddock) {
+    setActivePaddock(p);
+    // Load current seeding record for paddock
+    const existing = await apiCare<PaddockSeeding | null>("getPaddockSeeding", {
+      tenant_id: tenantId,
+      paddock_id: p.id,
+    });
+
+    setPadForm(
+      existing || {
+        tenant_id: tenantId,
+        paddock_id: p.id,
+        seed_mix_id: null,
+        seeding_rate_lbs_ac: null,
+        fert_n_lb_ac: null,
+        fert_p_lb_ac: null,
+        fert_k_lb_ac: null,
+        lime_ton_ac: null,
+        last_seeded_date: null,
+        next_reseed_window: null,
+        notes: "",
+        custom_species: [],
+      }
+    );
+    setDrawerOpen(true);
+  }
+
+  function updatePadForm<K extends keyof PaddockSeeding>(key: K, val: PaddockSeeding[K]) {
+    setPadForm((prev) => (prev ? { ...prev, [key]: val } : prev));
+  }
+
+  function addCustomSpecies() {
+    setPadForm((prev) => {
+      if (!prev) return prev;
+      const next = [...(prev.custom_species || [])];
+      next.push({ species: "", lbs_per_ac: 0 });
+      return { ...prev, custom_species: next };
+    });
+  }
+  function updateCustomSpecies(i: number, field: "species" | "lbs_per_ac", value: string) {
+    setPadForm((prev) => {
+      if (!prev) return prev;
+      const next = [...(prev.custom_species || [])];
+      const row = { ...next[i] };
+      if (field === "species") row.species = value;
+      else row.lbs_per_ac = Number(value || 0);
+      next[i] = row;
+      return { ...prev, custom_species: next };
+    });
+  }
+  function removeCustomSpecies(i: number) {
+    setPadForm((prev) => {
+      if (!prev) return prev;
+      const next = [...(prev.custom_species || [])];
+      next.splice(i, 1);
+      return { ...prev, custom_species: next };
+    });
+  }
+
+  async function savePad() {
+    if (!padForm) return;
+    setSavingPad(true);
+    try {
+      await apiCare("savePaddockSeeding", {
+        tenant_id: tenantId,
+        payload: padForm,
+      });
+      setDrawerOpen(false);
+    } catch (e: any) {
+      alert(e.message || "Failed to save");
+    } finally {
+      setSavingPad(false);
+    }
+  }
+
+  /* ───────────────────────── Render ───────────────────────── */
+  return (
+    <div className="space-y-6">
+      {/* ───── Planner Summary ───── */}
+      <Card>
+        <CardHeader>
+          <div className="pb-2">
+            <CardTitle>AI Grazing & Feed Planner</CardTitle>
+          </div>
+        </CardHeader>
+        <CardContent>
+          <div className="space-y-4">
+            <div className="grid md:grid-cols-4 gap-3">
               <div>
-                <Label>Head</Label>
+                <Label>Herd Size (head)</Label>
                 <Input
                   type="number"
-                  min={0}
-                  value={String(herd.head)}
-                  onChange={(e) => setHerd((h) => ({ ...h, head: Number(e.target.value || 0) }))}
+                  value={herdSize}
+                  onChange={(e) => {
+                    // Herd size is derived from paddockCounts;
+                    // If you want manual override, you can enable it here.
+                    // For now we keep derived-only; no change on input.
+                  }}
+                  readOnly
                 />
+                <div className="text-[11px] text-slate-500 mt-1">
+                  Derived from current_paddock assignments.
+                </div>
               </div>
               <div>
-                <Label>Avg Weight (lb)</Label>
+                <Label>Avg Animal Wt (lb)</Label>
                 <Input
                   type="number"
-                  min={0}
-                  value={String(herd.avgWeightLb)}
-                  onChange={(e) =>
-                    setHerd((h) => ({ ...h, avgWeightLb: Number(e.target.value || 0) }))
-                  }
+                  value={avgAnimalWt}
+                  onChange={(e) => setAvgAnimalWt(Number(e.target.value || 0))}
                 />
               </div>
               <div>
                 <Label>Intake % BW</Label>
                 <Input
                   type="number"
-                  min={0}
-                  step="0.1"
-                  value={String(herd.intakePctBW)}
-                  onChange={(e) =>
-                    setHerd((h) => ({ ...h, intakePctBW: Number(e.target.value || 0) }))
-                  }
+                  value={intakePctBW}
+                  onChange={(e) => setIntakePctBW(Number(e.target.value || 0))}
                 />
               </div>
               <div>
                 <Label>Horizon (days)</Label>
                 <Input
                   type="number"
-                  min={1}
-                  value={String(horizonDays)}
-                  onChange={(e) => setHorizonDays(Number(e.target.value || 1))}
+                  value={horizonDays}
+                  onChange={(e) => setHorizonDays(Number(e.target.value || 0))}
                 />
               </div>
             </div>
 
-            <div className="grid sm:grid-cols-3 gap-3 text-sm">
-              <div className="border rounded-lg p-3 bg-white/60">
-                <div className="text-slate-600">Daily Intake (DM)</div>
-                <div className="text-lg font-semibold">
-                  {Math.round(dailyIntakeLb).toLocaleString()} lb/day
-                </div>
+            <div className="grid md:grid-cols-4 gap-3">
+              <div>
+                <Label>Target Residual (lb DM/ac)</Label>
+                <Input
+                  type="number"
+                  value={targetResidual}
+                  onChange={(e) => setTargetResidual(Number(e.target.value || 0))}
+                />
               </div>
-              <div className="border rounded-lg p-3 bg-white/60">
-                <div className="text-slate-600">Horizon Intake</div>
-                <div className="text-lg font-semibold">
-                  {(Math.round(dailyIntakeLb * horizonDays)).toLocaleString()} lb over {horizonDays} d
-                </div>
+              <div>
+                <Label>Growth (lb DM/ac/day)</Label>
+                <Input
+                  type="number"
+                  value={growthLbDmAcDay}
+                  onChange={(e) => setGrowthLbDmAcDay(Number(e.target.value || 0))}
+                />
               </div>
-              <div className="border rounded-lg p-3 bg-white/60">
-                <div className="text-slate-600">Project Acres</div>
-                <div className="text-lg font-semibold">{projectAcres}</div>
+              <div className="flex items-end text-sm text-slate-600">
+                Total Area: <b className="ml-1">{totalArea.toFixed(1)}</b> ac
               </div>
-            </div>
-          </CardContent>
-        </Card>
-
-        {/* ── Paddock add ── */}
-        <Card>
-          <CardHeader>
-            <CardTitle>Paddocks</CardTitle>
-          </CardHeader>
-          <CardContent className="space-y-6">
-            <div className="border rounded-xl p-4 bg-white/70">
-              <div className="grid sm:grid-cols-3 gap-3">
-                <div>
-                  <Label>Paddock Name</Label>
-                  <Input
-                    value={newPaddock.name}
-                    onChange={(e) => setNewPaddock((x) => ({ ...x, name: e.target.value }))}
-                    placeholder="e.g., South 3"
-                  />
-                </div>
-                <div>
-                  <Label>Acres</Label>
-                  <Input
-                    type="number"
-                    min={0}
-                    value={newPaddock.acres}
-                    onChange={(e) => setNewPaddock((x) => ({ ...x, acres: e.target.value }))}
-                    placeholder="e.g., 8"
-                  />
-                </div>
-                <div className="flex items-end">
-                  <Button onClick={addPaddock} className="w-full">
-                    Add Paddock
-                  </Button>
-                </div>
+              <div className="flex items-end">
+                <Button variant="outline" size="sm" onClick={loadCounts} disabled={loadingCounts}>
+                  {loadingCounts ? "Counting…" : "Refresh Head Counts"}
+                </Button>
               </div>
             </div>
 
-            {/* ── Paddock list ── */}
-            <div className="border rounded-xl overflow-hidden">
-              <table className="w-full text-sm">
-                <thead className="bg-slate-100">
-                  <tr>
-                    <th className="text-left p-2">Paddock</th>
-                    <th className="text-left p-2">Acres</th>
-                    <th className="text-left p-2">Zone</th>
-                    <th className="text-left p-2">Mix</th>
-                    <th className="text-right p-2">Head</th>
-                    <th className="text-right p-2">Est. Cost</th>
-                    <th className="text-right p-2 w-40">Actions</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {paddocks.map((p, i) => {
-                    const costs = paddockCosts(p);
-                    const mixes = mixesByZone[p.seeding.zone] || [];
-                    const mixName = mixes[p.seeding.mixIndex]?.name ?? "Custom";
-                    return (
-                      <tr key={i} className="border-t">
-                        <td className="p-2">
-                          <div className="font-medium">{p.name}</div>
-                        </td>
-                        <td className="p-2">{p.acres}</td>
-                        <td className="p-2">{p.seeding.zone}</td>
-                        <td className="p-2">{mixName}</td>
-                        <td className="p-2 text-right">
-  {paddockCounts[p.name] ?? 0}
-</td>
-                        <td className="p-2 text-right">{fmt(costs.total)}</td>
-                        <td className="p-2 text-right">
-                          <div className="flex gap-2 justify-end">
-                            <Button
-                              size="sm"
-                              variant="outline"
-                              onClick={() => setEditSeedIdx(i)}
-                              title="Edit seeding & amendments"
-                            >
-                              Edit Seeding &amp; Amendments
-                            </Button>
-                            <div className="flex gap-2 items-center">
-  <Button variant="outline" size="sm" onClick={refreshHeadCounts} disabled={countLoading}>
-    {countLoading ? "Counting…" : "Refresh Head Counts"}
-  </Button>
-</div>
-                          </div>
-                        </td>
-                      </tr>
-                    );
-                  })}
-                  {paddocks.length === 0 && (
-                    <tr>
-                      <td className="p-2" colSpan={6}>
-                        No paddocks yet — add your first one above.
-                      </td>
-                    </tr>
-                  )}
-                </tbody>
-              </table>
+            <div className="grid md:grid-cols-3 gap-3">
+              <div className="rounded-lg border p-3 bg-white/70">
+                <div className="text-sm">Herd Intake (lb/day)</div>
+                <div className="text-xl font-semibold">{herdIntakeLbPerDay.toLocaleString()}</div>
+              </div>
+              <div className="rounded-lg border p-3 bg-white/70">
+                <div className="text-sm">Pasture Growth (lb/day)</div>
+                <div className="text-xl font-semibold">{dailyGrowthFeedLb.toLocaleString()}</div>
+              </div>
+              <div className="rounded-lg border p-3 bg-white/70">
+                <div className="text-sm">Balance (lb/day)</div>
+                <div className={`text-xl font-semibold ${netBalanceLb >= 0 ? "text-emerald-700" : "text-rose-700"}`}>
+                  {netBalanceLb.toLocaleString()}
+                </div>
+              </div>
             </div>
-
-            {/* ── Seeding & Amendments Editor (per paddock) ── */}
-            {editSeedIdx !== null && paddocks[editSeedIdx] && (
-              <SeedingEditor
-                paddockIndex={editSeedIdx}
-                paddock={paddocks[editSeedIdx]}
-                mixesByZone={mixesByZone}
-                unitCosts={unitCosts}
-                onClose={() => setEditSeedIdx(null)}
-                onUpdateSeeding={(idx, patch) => updatePaddockSeeding(idx, patch)}
-                onAddCustomMix={(zone, mix) => addCustomMix(zone, mix)}
-                costPreview={(p) => paddockCosts(p)}
-                setUnitCosts={setUnitCosts}
-              />
-            )}
-          </CardContent>
-        </Card>
-      </div>
-
-      {/* Right — Project summary */}
-      <Card>
-        <CardHeader>
-          <CardTitle>Project Summary</CardTitle>
-        </CardHeader>
-        <CardContent className="space-y-4">
-          <div className="text-sm grid grid-cols-2 gap-y-1">
-            <div className="text-slate-600">Total Acres</div>
-            <div className="text-right font-medium">{projectTotals.acres}</div>
-            <div className="text-slate-600">Seed Cost</div>
-            <div className="text-right font-medium">{fmt(projectTotals.seed)}</div>
-            <div className="text-slate-600">N Cost</div>
-            <div className="text-right font-medium">{fmt(projectTotals.n)}</div>
-            <div className="text-slate-600">P₂O₅ Cost</div>
-            <div className="text-right font-medium">{fmt(projectTotals.p)}</div>
-            <div className="text-slate-600">K₂O Cost</div>
-            <div className="text-right font-medium">{fmt(projectTotals.k)}</div>
-            <div className="text-slate-600">Lime Cost</div>
-            <div className="text-right font-medium">{fmt(projectTotals.lime)}</div>
-            <div className="col-span-2 border-t my-1" />
-            <div className="text-slate-700 font-semibold">Total</div>
-            <div className="text-right text-emerald-700 font-semibold">{fmt(projectTotals.total)}</div>
-          </div>
-
-          <div className="text-xs text-slate-500">
-            Costs are estimates only. Adjust rates and unit prices to match your suppliers and soil tests.
           </div>
         </CardContent>
       </Card>
-    </div>
-  );
-}
 
-/** ───────────────────────── Subcomponent: SeedingEditor ───────────────────────── */
-function SeedingEditor({
-  paddockIndex,
-  paddock,
-  mixesByZone,
-  unitCosts,
-  onClose,
-  onUpdateSeeding,
-  onAddCustomMix,
-  costPreview,
-  setUnitCosts,
-}: {
-  paddockIndex: number;
-  paddock: Paddock;
-  mixesByZone: Record<string, SeedMix[]>;
-  unitCosts: UnitCosts;
-  onClose: () => void;
-  onUpdateSeeding: (idx: number, patch: Partial<SeedingPlan>) => void;
-  onAddCustomMix: (zone: string, mix: SeedMix) => void;
-  costPreview: (p: Paddock) => { seedCost: number; nCost: number; pCost: number; kCost: number; limeCost: number; total: number };
-  setUnitCosts: React.Dispatch<React.SetStateAction<UnitCosts>>;
-}) {
-  const [customName, setCustomName] = useState("");
-  const [customRate, setCustomRate] = useState<string>("12");
-  const [customNotes, setCustomNotes] = useState("");
-
-  const s = paddock.seeding;
-  const zone = s.zone;
-  const mixes = mixesByZone[zone] || [];
-  const costs = costPreview(paddock);
-
-  const fmt = (n: number) =>
-    n.toLocaleString(undefined, { style: "currency", currency: "USD", maximumFractionDigits: 0 });
-
-  function addMix() {
-    const rate = Number(customRate || 0);
-    if (!customName.trim() || rate <= 0) {
-      alert("Enter a mix name and positive suggested rate (lbs/ac).");
-      return;
-    }
-    const mix: SeedMix = {
-      name: customName.trim(),
-      suggested_total_rate_lbs_ac: rate,
-      notes: customNotes.trim() || undefined,
-    };
-    onAddCustomMix(zone, mix);
-
-    // set this new mix selected for the paddock
-    const newIndex = (mixesByZone[zone]?.length || 0); // appended at end
-    onUpdateSeeding(paddockIndex, {
-      mixIndex: newIndex,
-      seedRate: rate,
-    });
-    setCustomName("");
-    setCustomRate("12");
-    setCustomNotes("");
-  }
-
-  return (
-    <Card>
-      <CardHeader>
-        <CardTitle>Seeding &amp; Amendments — {paddock.name}</CardTitle>
-      </CardHeader>
-      <CardContent className="space-y-6">
-        {/* A) Zone + Mix + rates */}
-        <div className="grid md:grid-cols-3 gap-3">
-          <div>
-            <Label>Planting Zone</Label>
-            <select
-              className="w-full h-10 rounded-md border border-slate-300 bg-white px-3 text-sm"
-              value={zone}
-              onChange={(e) => {
-                const newZone = e.target.value;
-                const ms = mixesByZone[newZone] || [];
-                const nextIndex = Math.min(s.mixIndex, Math.max(ms.length - 1, 0));
-                const nextRate = ms[nextIndex]?.suggested_total_rate_lbs_ac ?? s.seedRate;
-                onUpdateSeeding(paddockIndex, {
-                  zone: newZone,
-                  mixIndex: nextIndex,
-                  seedRate: nextRate,
-                });
-              }}
-            >
-              {Object.keys(mixesByZone).map((z) => (
-                <option key={z} value={z}>
-                  {z}
-                </option>
-              ))}
-            </select>
+      {/* ───── Seed Mixes (create different mixes) ───── */}
+      <Card>
+        <CardHeader>
+          <div className="pb-2">
+            <CardTitle>Seed Mixes</CardTitle>
           </div>
-
-          <div>
-            <Label>Seed Mix</Label>
-            <select
-              className="w-full h-10 rounded-md border border-slate-300 bg-white px-3 text-sm"
-              value={String(s.mixIndex)}
-              onChange={(e) => {
-                const idxVal = Number(e.target.value || 0);
-                const suggested = mixes[idxVal]?.suggested_total_rate_lbs_ac ?? s.seedRate;
-                onUpdateSeeding(paddockIndex, {
-                  mixIndex: idxVal,
-                  seedRate: suggested,
-                });
-              }}
-            >
-              {mixes.map((m, i) => (
-                <option key={`${m.name}-${i}`} value={i}>
-                  {m.name} ({m.suggested_total_rate_lbs_ac} lbs/ac)
-                </option>
-              ))}
-            </select>
-          </div>
-
-          <div>
-            <Label>Seed Rate (lbs/ac)</Label>
-            <Input
-              type="number"
-              min={0}
-              value={String(s.seedRate)}
-              onChange={(e) => onUpdateSeeding(paddockIndex, { seedRate: Number(e.target.value || 0) })}
-            />
-          </div>
-
-          <div>
-            <Label>Seed Price ($/lb)</Label>
-            <Input
-              type="number"
-              min={0}
-              step="0.01"
-              value={String(s.seedPrice)}
-              onChange={(e) => onUpdateSeeding(paddockIndex, { seedPrice: Number(e.target.value || 0) })}
-            />
-          </div>
-
-          <div>
-            <Label>N Rate (lbs/ac)</Label>
-            <Input
-              type="number"
-              min={0}
-              value={String(s.nRate)}
-              onChange={(e) => onUpdateSeeding(paddockIndex, { nRate: Number(e.target.value || 0) })}
-            />
-          </div>
-
-          <div>
-            <Label>P₂O₅ Rate (lbs/ac)</Label>
-            <Input
-              type="number"
-              min={0}
-              value={String(s.pRate)}
-              onChange={(e) => onUpdateSeeding(paddockIndex, { pRate: Number(e.target.value || 0) })}
-            />
-          </div>
-
-          <div>
-            <Label>K₂O Rate (lbs/ac)</Label>
-            <Input
-              type="number"
-              min={0}
-              value={String(s.kRate)}
-              onChange={(e) => onUpdateSeeding(paddockIndex, { kRate: Number(e.target.value || 0) })}
-            />
-          </div>
-
-          <div>
-            <Label>Lime Rate (tons/ac)</Label>
-            <Input
-              type="number"
-              min={0}
-              step="0.1"
-              value={String(s.limeRate)}
-              onChange={(e) => onUpdateSeeding(paddockIndex, { limeRate: Number(e.target.value || 0) })}
-            />
-          </div>
-        </div>
-
-        {/* B) Add your own mix (for this zone) */}
-        <div className="border rounded-xl p-4 bg-white/70">
-          <div className="font-medium mb-2">Create a New Seed Mix for {zone}</div>
-          <div className="grid md:grid-cols-4 gap-3">
-            <div className="md:col-span-2">
+        </CardHeader>
+        <CardContent>
+          <div className="grid md:grid-cols-3 gap-3 mb-4">
+            <div className="md:col-span-1">
               <Label>Mix Name</Label>
               <Input
-                value={customName}
-                onChange={(e) => setCustomName(e.target.value)}
-                placeholder="e.g., Orchardgrass + Red/White Clover"
+                value={newMixName}
+                onChange={(e) => setNewMixName(e.target.value)}
+                placeholder="e.g., Cool-Season Blend"
               />
             </div>
-            <div>
-              <Label>Suggested Total Rate (lbs/ac)</Label>
-              <Input
-                type="number"
-                min={1}
-                value={customRate}
-                onChange={(e) => setCustomRate(e.target.value)}
+            <div className="md:col-span-2">
+              <Label>Notes</Label>
+              <Textarea
+                value={newMixNotes}
+                onChange={(e) => setNewMixNotes(e.target.value)}
+                placeholder="Optional notes about this mix"
               />
             </div>
-            <div>
-              <Label>&nbsp;</Label>
-              <Button className="w-full" onClick={addMix}>
-                Add Mix
+            <div className="md:col-span-3">
+              <Button onClick={addMix}>Add Seed Mix</Button>
+            </div>
+          </div>
+
+          <div className="overflow-auto border rounded">
+            <table className="w-full text-sm">
+              <thead className="bg-slate-100">
+                <tr>
+                  <th className="p-2 text-left">Mix</th>
+                  <th className="p-2 text-left">Notes</th>
+                  <th className="p-2 text-left">Composition (lbs/ac)</th>
+                  <th className="p-2 text-right w-40">Actions</th>
+                </tr>
+              </thead>
+              <tbody>
+                {mixes.map((m) => (
+                  <tr key={m.id} className="border-t align-top">
+                    <td className="p-2">{m.name}</td>
+                    <td className="p-2 whitespace-pre-wrap">{m.notes}</td>
+                    <td className="p-2">
+                      <ul className="list-disc ml-5">
+                        {(mixItems[m.id] || []).map((it) => (
+                          <li key={it.id} className="flex items-center justify-between">
+                            <span>
+                              {it.species} — {it.lbs_per_ac} lbs/ac
+                            </span>
+                            <button
+                              className="text-xs text-rose-700 hover:underline"
+                              onClick={() => removeMixItem(it.id)}
+                              title="Remove species"
+                            >
+                              Remove
+                            </button>
+                          </li>
+                        ))}
+                      </ul>
+                      <div className="mt-2">
+                        <Button size="sm" variant="outline" onClick={() => addMixItem(m.id)}>
+                          + Add Species
+                        </Button>
+                      </div>
+                    </td>
+                    <td className="p-2 text-right">
+                      <Button size="sm" variant="destructive" onClick={() => deleteMix(m.id)}>
+                        Delete Mix
+                      </Button>
+                    </td>
+                  </tr>
+                ))}
+                {mixes.length === 0 && (
+                  <tr>
+                    <td className="p-2" colSpan={4}>
+                      No seed mixes yet. Create one above.
+                    </td>
+                  </tr>
+                )}
+              </tbody>
+            </table>
+          </div>
+        </CardContent>
+      </Card>
+
+      {/* ───── Paddocks with head counts ───── */}
+      <Card>
+        <CardHeader>
+          <div className="pb-2 flex items-center justify-between">
+            <CardTitle>Paddocks</CardTitle>
+            <div className="text-sm text-slate-600">
+              Total Area: <b>{totalArea.toFixed(1)}</b> ac
+            </div>
+          </div>
+        </CardHeader>
+        <CardContent>
+          <div className="overflow-auto border rounded">
+            <table className="w-full text-sm">
+              <thead className="bg-slate-100">
+                <tr>
+                  <th className="p-2 text-left">Paddock</th>
+                  <th className="p-2 text-left">Zone</th>
+                  <th className="p-2 text-right">Area (ac)</th>
+                  <th className="p-2 text-right">Head</th>
+                  <th className="p-2 text-left">Notes</th>
+                  <th className="p-2 text-right w-48">Actions</th>
+                </tr>
+              </thead>
+              <tbody>
+                {paddocks.map((p) => (
+                  <tr key={p.id} className="border-t">
+                    <td className="p-2">{p.name}</td>
+                    <td className="p-2">{p.zone || "-"}</td>
+                    <td className="p-2 text-right">{p.area_ac?.toFixed(1) || "0.0"}</td>
+                    <td className="p-2 text-right">{paddockCounts[p.name] ?? 0}</td>
+                    <td className="p-2">{p.notes || ""}</td>
+                    <td className="p-2 text-right">
+                      <Button variant="outline" size="sm" onClick={() => openDrawer(p)}>
+                        Edit Seeding & Amendments
+                      </Button>
+                    </td>
+                  </tr>
+                ))}
+                {paddocks.length === 0 && (
+                  <tr>
+                    <td className="p-2" colSpan={6}>
+                      No paddocks found.
+                    </td>
+                  </tr>
+                )}
+              </tbody>
+            </table>
+          </div>
+        </CardContent>
+      </Card>
+
+      {/* ───── Right Drawer: Seeding & Amendments ───── */}
+      {drawerOpen && activePaddock && padForm && (
+        <div className="fixed inset-0 z-50">
+          {/* Backdrop */}
+          <div className="absolute inset-0 bg-black/30" onClick={() => setDrawerOpen(false)} />
+          {/* Panel */}
+          <div className="absolute right-0 top-0 h-full w-full max-w-xl bg-white shadow-xl overflow-auto p-4">
+            <div className="flex justify-between items-center border-b pb-2 mb-4">
+              <div>
+                <div className="font-semibold text-lg">{activePaddock.name}</div>
+                <div className="text-xs text-slate-500">
+                  Paddock #{activePaddock.id} • {activePaddock.area_ac ?? 0} ac
+                </div>
+              </div>
+              <Button size="sm" variant="outline" onClick={() => setDrawerOpen(false)}>
+                Close
               </Button>
             </div>
-            <div className="md:col-span-4">
-              <Label>Notes (optional)</Label>
-              <textarea
-                value={customNotes}
-                onChange={(e) => setCustomNotes(e.target.value)}
-                rows={2}
-                className="mt-1 w-full rounded-md border border-slate-300 bg-white px-3 py-2 text-sm"
-                placeholder="Species & proportions, supplier, etc."
+
+            {/* Mix + rate */}
+            <div className="grid md:grid-cols-2 gap-3">
+              <div>
+                <Label>Seed Mix</Label>
+                <select
+                  className="h-10 w-full rounded-md border border-slate-300 bg-white px-3 py-2 text-sm"
+                  value={padForm.seed_mix_id ?? ""}
+                  onChange={(e) =>
+                    updatePadForm(
+                      "seed_mix_id",
+                      e.target.value ? Number(e.target.value) : null
+                    )
+                  }
+                >
+                  <option value="">— None —</option>
+                  {mixes.map((m) => (
+                    <option key={m.id} value={m.id}>
+                      {m.name}
+                    </option>
+                  ))}
+                </select>
+              </div>
+              <div>
+                <Label>Seeding Rate (lbs/ac)</Label>
+                <Input
+                  type="number"
+                  value={padForm.seeding_rate_lbs_ac ?? ""}
+                  onChange={(e) =>
+                    updatePadForm("seeding_rate_lbs_ac", Number(e.target.value || 0))
+                  }
+                />
+              </div>
+            </div>
+
+            {/* Fertilizer & Lime */}
+            <div className="grid md:grid-cols-4 gap-3 mt-4">
+              <div>
+                <Label>N (lb/ac)</Label>
+                <Input
+                  type="number"
+                  value={padForm.fert_n_lb_ac ?? ""}
+                  onChange={(e) =>
+                    updatePadForm("fert_n_lb_ac", Number(e.target.value || 0))
+                  }
+                />
+              </div>
+              <div>
+                <Label>P (lb/ac)</Label>
+                <Input
+                  type="number"
+                  value={padForm.fert_p_lb_ac ?? ""}
+                  onChange={(e) =>
+                    updatePadForm("fert_p_lb_ac", Number(e.target.value || 0))
+                  }
+                />
+              </div>
+              <div>
+                <Label>K (lb/ac)</Label>
+                <Input
+                  type="number"
+                  value={padForm.fert_k_lb_ac ?? ""}
+                  onChange={(e) =>
+                    updatePadForm("fert_k_lb_ac", Number(e.target.value || 0))
+                  }
+                />
+              </div>
+              <div>
+                <Label>Lime (tons/ac)</Label>
+                <Input
+                  type="number"
+                  value={padForm.lime_ton_ac ?? ""}
+                  onChange={(e) =>
+                    updatePadForm("lime_ton_ac", Number(e.target.value || 0))
+                  }
+                />
+              </div>
+            </div>
+
+            {/* Dates */}
+            <div className="grid md:grid-cols-2 gap-3 mt-4">
+              <div>
+                <Label>Last Seeded Date</Label>
+                <Input
+                  type="date"
+                  value={padForm.last_seeded_date ?? ""}
+                  onChange={(e) => updatePadForm("last_seeded_date", e.target.value || null)}
+                />
+              </div>
+              <div>
+                <Label>Next Reseed Window</Label>
+                <Input
+                  placeholder="e.g., Fall 2026"
+                  value={padForm.next_reseed_window ?? ""}
+                  onChange={(e) => updatePadForm("next_reseed_window", e.target.value || null)}
+                />
+              </div>
+            </div>
+
+            {/* Custom species per paddock */}
+            <div className="mt-4">
+              <div className="flex items-center justify-between">
+                <Label>Custom Species (this paddock only)</Label>
+                <Button size="sm" variant="outline" onClick={addCustomSpecies}>
+                  + Add species
+                </Button>
+              </div>
+              <div className="mt-2 space-y-2">
+                {(padForm.custom_species || []).map((row, i) => (
+                  <div key={i} className="grid grid-cols-12 gap-2">
+                    <div className="col-span-7">
+                      <Input
+                        placeholder="Species"
+                        value={row.species}
+                        onChange={(e) => updateCustomSpecies(i, "species", e.target.value)}
+                      />
+                    </div>
+                    <div className="col-span-3">
+                      <Input
+                        type="number"
+                        placeholder="lbs/ac"
+                        value={row.lbs_per_ac}
+                        onChange={(e) => updateCustomSpecies(i, "lbs_per_ac", e.target.value)}
+                      />
+                    </div>
+                    <div className="col-span-2 text-right">
+                      <Button
+                        size="sm"
+                        variant="destructive"
+                        onClick={() => removeCustomSpecies(i)}
+                      >
+                        Remove
+                      </Button>
+                    </div>
+                  </div>
+                ))}
+                {(!padForm.custom_species || padForm.custom_species.length === 0) && (
+                  <div className="text-xs text-slate-500">No custom species added.</div>
+                )}
+              </div>
+            </div>
+
+            {/* Notes */}
+            <div className="mt-4">
+              <Label>Notes</Label>
+              <Textarea
+                value={padForm.notes ?? ""}
+                onChange={(e) => updatePadForm("notes", e.target.value || null)}
+                placeholder="Any additional notes…"
               />
             </div>
-          </div>
-        </div>
 
-        {/* C) Preview for this paddock + global unit prices */}
-        <div className="grid md:grid-cols-2 gap-3">
-          <div className="border rounded-xl p-4 bg-white/60 text-sm">
-            <div className="font-semibold mb-1">This Paddock</div>
-            <div className="space-y-1">
-              <div>
-                <b>Paddock:</b> {paddock.name} ({paddock.acres} ac)
+            {/* Save */}
+            <div className="mt-4 flex items-center justify-between">
+              <div className="text-xs text-slate-500">
+                Saving writes through server route for RLS safety.
               </div>
-              <div>
-                <b>Seed:</b> {s.seedRate} lbs/ac × ${s.seedPrice.toFixed(2)} /lb →{" "}
-                <b>{fmt(s.seedRate * s.seedPrice)} /ac</b>
-              </div>
-              <div className="text-xs text-slate-600">
-                * Fertilizer & lime use the project unit prices at right.
-              </div>
-            </div>
-            <div className="mt-3">
-              Per-paddock cost: <b>{fmt(costs.total)}</b>
-            </div>
-          </div>
-
-          <div className="border rounded-xl p-4 bg-white/60">
-            <div className="font-semibold mb-1">Project Unit Prices</div>
-            <div className="grid grid-cols-2 gap-2 text-sm">
-              <div>
-                <Label>N ($/lb)</Label>
-                <Input
-                  type="number"
-                  min={0}
-                  step="0.01"
-                  value={String(unitCosts.N)}
-                  onChange={(e) =>
-                    setUnitCosts((u) => ({ ...u, N: Number(e.target.value || 0) }))
-                  }
-                />
-              </div>
-              <div>
-                <Label>P₂O₅ ($/lb)</Label>
-                <Input
-                  type="number"
-                  min={0}
-                  step="0.01"
-                  value={String(unitCosts.P2O5)}
-                  onChange={(e) =>
-                    setUnitCosts((u) => ({ ...u, P2O5: Number(e.target.value || 0) }))
-                  }
-                />
-              </div>
-              <div>
-                <Label>K₂O ($/lb)</Label>
-                <Input
-                  type="number"
-                  min={0}
-                  step="0.01"
-                  value={String(unitCosts.K2O)}
-                  onChange={(e) =>
-                    setUnitCosts((u) => ({ ...u, K2O: Number(e.target.value || 0) }))
-                  }
-                />
-              </div>
-              <div>
-                <Label>Lime ($/ton)</Label>
-                <Input
-                  type="number"
-                  min={0}
-                  step="0.01"
-                  value={String(unitCosts.lime_ton)}
-                  onChange={(e) =>
-                    setUnitCosts((u) => ({ ...u, lime_ton: Number(e.target.value || 0) }))
-                  }
-                />
-              </div>
+              <Button onClick={savePad} disabled={savingPad}>
+                {savingPad ? "Saving…" : "Save Seeding & Amendments"}
+              </Button>
             </div>
           </div>
         </div>
-
-        <div className="flex justify-end gap-2">
-          <Button variant="outline" onClick={onClose}>
-            Close
-          </Button>
-        </div>
-      </CardContent>
-    </Card>
+      )}
+    </div>
   );
 }

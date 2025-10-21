@@ -149,20 +149,19 @@ export async function POST(req: Request) {
     }
 
     if (action === "updateAnimal") {
-      const { id, tenant_id, patch } = body as {
-        id: number;
-        tenant_id: string;
-        patch: any;
-      };
-      if (!id || !tenant_id) return err("id and tenant_id required");
-      const { error } = await admin
-        .from("agriops_cattle")
-        .update(patch)
-        .eq("id", id)
-        .eq("tenant_id", tenant_id);
-      if (error) throw error;
-      return ok({ updated: true });
-    }
+  const { id, tenant_id, patch } = body as { id: number; tenant_id: string; patch: any };
+  if (!id || !tenant_id) return err("id and tenant_id required");
+
+  // ✅ ensure patch can contain current_paddock and any other field
+  const { error } = await admin
+    .from("agriops_cattle")
+    .update(patch)
+    .eq("id", id)
+    .eq("tenant_id", tenant_id);
+
+  if (error) throw error;
+  return ok({ updated: true });
+}
 
     if (action === "bulkUpsertAnimals") {
       const { rows } = body as { rows: any[] };
