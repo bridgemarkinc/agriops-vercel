@@ -1,5 +1,3 @@
-"use client";
-
 // Force runtime to avoid static prerender and caching for this page
 export const dynamic = "force-dynamic";
 export const revalidate = 0;        // must be a number or false
