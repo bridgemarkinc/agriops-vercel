@@ -1,364 +1,168 @@
 // app/api/cattle/route.ts
-export const runtime = "nodejs";          // ensure Node (not Edge)
-export const dynamic = "force-dynamic";   // don't cache
-
 import { NextResponse } from "next/server";
 import { createClient } from "@supabase/supabase-js";
 
-/* Helpers */
-function ok(data?: any) {
-  return NextResponse.json({ ok: true, data });
+export const runtime = "nodejs";
+
+function supa() {
+  const url = process.env.NEXT_PUBLIC_SUPABASE_URL;
+  const key = process.env.SUPABASE_SERVICE_ROLE_KEY;
+  if (!url || !key) throw new Error("Supabase env vars missing");
+  return createClient(url, key, { auth: { persistSession: false } });
 }
-function err(message = "Request failed", status = 400) {
+
+function ok(data: any, status = 200) {
+  return NextResponse.json({ ok: true, data }, { status });
+}
+function err(message: string, status = 400) {
   return NextResponse.json({ ok: false, error: message }, { status });
-}
-
-/* Supabase (SERVER — uses service role) */
-const SUPABASE_URL = process.env.NEXT_PUBLIC_SUPABASE_URL!;
-const SERVICE_ROLE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY!; // no NEXT_PUBLIC_
-const PHOTOS_BUCKET = "cattle-photos";
-
-const admin = createClient(SUPABASE_URL, SERVICE_ROLE_KEY, {
-  auth: { persistSession: false },
-});
-
-/* Internal: set one primary + sync primary_photo_url on cattle */
-async function setPrimaryInternal(
-  tenant_id: string,
-  animal_id: number,
-  photo_id: number,
-  photo_url: string
-) {
-  const { error: e1 } = await admin
-    .from("agriops_cattle_photos")
-    .update({ is_primary: false })
-    .eq("tenant_id", tenant_id)
-    .eq("animal_id", animal_id);
-  if (e1) throw e1;
-
-  const { error: e2 } = await admin
-    .from("agriops_cattle_photos")
-    .update({ is_primary: true })
-    .eq("tenant_id", tenant_id)
-    .eq("animal_id", animal_id)
-    .eq("id", photo_id);
-  if (e2) throw e2;
-
-  const { error: e3 } = await admin
-    .from("agriops_cattle")
-    .update({ primary_photo_url: photo_url })
-    .eq("id", animal_id)
-    .eq("tenant_id", tenant_id);
-  if (e3) throw e3;
 }
 
 export async function POST(req: Request) {
   try {
-    const ctype = req.headers.get("content-type") || "";
-
-    /* ───────── A. multipart/form-data: direct file upload to Storage ───────── */
-    if (ctype.includes("multipart/form-data")) {
-      const form = await req.formData();
-      const action = String(form.get("action") || "");
-      if (action !== "uploadAnimalPhoto") {
-        return err(`Unsupported multipart action: ${action}`, 400);
-      }
-
-      const tenant_id = String(form.get("tenant_id") || "");
-      const animal_id = Number(form.get("animal_id") || 0);
-      const tag = String(form.get("tag") || "");
-      const file = form.get("file") as File | null;
-      const set_primary = String(form.get("set_primary") || "") === "true";
-
-      if (!tenant_id || !animal_id || !tag || !file) {
-        return err("tenant_id, animal_id, tag, file required");
-      }
-
-      // Build a safe path and upload
-      const ext = (file.name.split(".").pop() || "jpg").toLowerCase();
-      const safeTag = tag.replace(/[^a-z0-9_-]/gi, "_");
-      const path = `${tenant_id}/${safeTag}/${Date.now()}_${Math.random()
-        .toString(36)
-        .slice(2)}.${ext}`;
-
-      const { error: upErr } = await admin.storage
-        .from(PHOTOS_BUCKET)
-        .upload(path, file, { upsert: true });
-      if (upErr) throw upErr;
-
-      const { data: pub } = admin.storage.from(PHOTOS_BUCKET).getPublicUrl(path);
-      const photo_url = pub?.publicUrl;
-      if (!photo_url) return err("failed to get public URL");
-
-      // Insert DB row
-      const { data: existing, error: exErr } = await admin
-        .from("agriops_cattle_photos")
-        .select("id")
-        .eq("tenant_id", tenant_id)
-        .eq("animal_id", animal_id);
-      if (exErr) throw exErr;
-
-      const sort_order = existing?.length ?? 0;
-
-      const { data: ins, error: insErr } = await admin
-        .from("agriops_cattle_photos")
-        .insert({
-          tenant_id,
-          animal_id,
-          tag,
-          photo_url,
-          photo_path: path,
-          is_primary: false,
-          sort_order,
-        })
-        .select("id")
-        .single();
-      if (insErr) throw insErr;
-
-      // Make first pic primary or respect explicit flag
-      if (set_primary || (existing?.length ?? 0) === 0) {
-        await setPrimaryInternal(tenant_id, animal_id, ins.id, photo_url);
-      }
-
-      return ok({ id: ins.id, photo_url, photo_path: path });
-    }
-
-    /* ───────── B. JSON actions ───────── */
     const body = await req.json();
-    const action = String(body?.action || "");
+    const { action } = body as { action?: string };
+    if (!action) return err("Missing action");
 
-    // Debug
-    if (action === "debugRole") {
-      return ok({
-        version: "cattle-route v2",
-        usingServiceRoleKey: !!process.env.SUPABASE_SERVICE_ROLE_KEY,
-        urlSet: !!process.env.NEXT_PUBLIC_SUPABASE_URL,
-      });
+    const db = supa();
+
+    switch (action) {
+      /* ───────────────
+       * LIST
+       * ─────────────── */
+      case "list": {
+        const { tenant_id } = body as { tenant_id?: string };
+        if (!tenant_id) return err("tenant_id required");
+
+        const { data, error } = await db
+          .from("agriops_cattle")
+          .select("*")
+          .eq("tenant_id", tenant_id)
+          .order("tag_number", { ascending: true });
+
+        if (error) throw error;
+        return ok(data ?? []);
+      }
+
+      /* ───────────────
+       * UPSERT
+       * ─────────────── */
+      case "upsert": {
+        const { row } = body as {
+          row: {
+            id?: number;
+            tenant_id: string;
+            tag_number: string;
+            name?: string;
+            breed?: string;
+            birth_date?: string | null;
+            sex?: string;
+            current_paddock?: string | null;
+            weight_lb?: number | null;
+          };
+        };
+
+        if (!row?.tenant_id || !row?.tag_number)
+          return err("tenant_id and tag_number required");
+
+        const payload = {
+          tenant_id: row.tenant_id,
+          tag_number: row.tag_number,
+          name: row.name || null,
+          breed: row.breed || null,
+          birth_date: row.birth_date || null,
+          sex: row.sex || null,
+          current_paddock: row.current_paddock || null,
+          weight_lb: row.weight_lb ?? null,
+        };
+
+        const query = row.id
+          ? db.from("agriops_cattle").update(payload).eq("id", row.id).select().maybeSingle()
+          : db.from("agriops_cattle").insert([payload]).select().maybeSingle();
+
+        const { data, error } = await query;
+        if (error) throw error;
+        return ok(data);
+      }
+
+      /* ───────────────
+       * DELETE
+       * ─────────────── */
+      case "delete": {
+        const { tenant_id, id } = body as { tenant_id?: string; id?: number };
+        if (!tenant_id || !id) return err("tenant_id and id required");
+
+        const { error } = await db
+          .from("agriops_cattle")
+          .delete()
+          .eq("tenant_id", tenant_id)
+          .eq("id", id);
+
+        if (error) throw error;
+        return ok({ id });
+      }
+
+      /* ───────────────
+       * LIST BY PADDOCK
+       * ─────────────── */
+      case "listByPaddock": {
+        const { tenant_id, paddock_name } = body as {
+          tenant_id?: string;
+          paddock_name?: string;
+        };
+        if (!tenant_id || !paddock_name)
+          return err("tenant_id and paddock_name required");
+
+        const { data, error } = await db
+          .from("agriops_cattle")
+          .select("*")
+          .eq("tenant_id", tenant_id)
+          .eq("current_paddock", paddock_name);
+
+        if (error) throw error;
+        return ok(data ?? []);
+      }
+
+      /* ───────────────
+       * MOVE CATTLE TO NEW PADDOCK
+       * ─────────────── */
+      case "moveToPaddock": {
+        const { tenant_id, ids, new_paddock } = body as {
+          tenant_id?: string;
+          ids?: number[];
+          new_paddock?: string;
+        };
+        if (!tenant_id || !ids?.length) return err("tenant_id and ids[] required");
+
+        const { error } = await db
+          .from("agriops_cattle")
+          .update({ current_paddock: new_paddock || null })
+          .eq("tenant_id", tenant_id)
+          .in("id", ids);
+
+        if (error) throw error;
+        return ok({ moved: ids.length, new_paddock });
+      }
+
+      default:
+        return err(`Unknown action: ${action}`);
     }
-
-    /* Animals */
-    if (action === "upsertAnimal") {
-      const { payload } = body as { payload: any };
-      if (!payload?.tenant_id || !payload?.tag)
-        return err("payload.tenant_id and payload.tag are required");
-      const { error } = await admin
-        .from("agriops_cattle")
-        .upsert(payload, { onConflict: "tenant_id,tag" } as any);
-      if (error) throw error;
-      return ok({ upserted: true });
-    }
-
-    if (action === "updateAnimal") {
-  const { id, tenant_id, patch } = body as { id: number; tenant_id: string; patch: any };
-  if (!id || !tenant_id) return err("id and tenant_id required");
-
-  // ✅ ensure patch can contain current_paddock and any other field
-  const { error } = await admin
-    .from("agriops_cattle")
-    .update(patch)
-    .eq("id", id)
-    .eq("tenant_id", tenant_id);
-
-  if (error) throw error;
-  return ok({ updated: true });
+  } catch (e: any) {
+    console.error("Cattle API error:", e);
+    return err(e?.message || "Server error", 500);
+  }
 }
 
-    if (action === "bulkUpsertAnimals") {
-      const { rows } = body as { rows: any[] };
-      if (!Array.isArray(rows) || rows.length === 0) return err("rows[] required");
-      const { error } = await admin
-        .from("agriops_cattle")
-        .upsert(rows, { onConflict: "tenant_id,tag" } as any);
-      if (error) throw error;
-      return ok({ imported: rows.length });
-    }
-
-    /* Weights / Treatments */
-    if (action === "addWeight") {
-      const { tenant_id, animal_id, weigh_date, weight_lb, notes } = body;
-      if (!tenant_id || !animal_id || !weigh_date || !weight_lb) {
-        return err("tenant_id, animal_id, weigh_date, weight_lb required");
-      }
-      const { error } = await admin.from("agriops_cattle_weights").insert({
-        tenant_id,
-        animal_id,
-        weigh_date,
-        weight_lb,
-        notes: notes || null,
-      });
-      if (error) throw error;
-      return ok({ added: true });
-    }
-
-    if (action === "addTreatment") {
-      const { tenant_id, animal_id, treat_date, product, dose, notes } = body;
-      if (!tenant_id || !animal_id || !treat_date)
-        return err("tenant_id, animal_id, treat_date required");
-      const { error } = await admin.from("agriops_cattle_treatments").insert({
-        tenant_id,
-        animal_id,
-        treat_date,
-        product: product || null,
-        dose: dose || null,
-        notes: notes || null,
-      });
-      if (error) throw error;
-      return ok({ added: true });
-    }
-
-    /* Processing */
-    if (action === "sendToProcessing") {
-      const { tenant_id, animal_id, tag, sent_date, processor, transport_id, live_weight_lb, notes } = body;
-      if (!tenant_id || !animal_id || !tag || !sent_date) {
-        return err("tenant_id, animal_id, tag, sent_date required");
-      }
-      const { error } = await admin.from("agriops_cattle_processing").insert({
-        tenant_id,
-        animal_id,
-        tag,
-        sent_date,
-        processor: processor || null,
-        transport_id: transport_id || null,
-        live_weight_lb: live_weight_lb ?? null,
-        status: "scheduled",
-        notes: notes || null,
-      });
-      if (error) throw error;
-
-      const { error: e2 } = await admin
-        .from("agriops_cattle")
-        .update({ status: "processing" })
-        .eq("id", animal_id)
-        .eq("tenant_id", tenant_id);
-      if (e2) throw e2;
-
-      return ok({ sent: true });
-    }
-
-    /* Photos (list/add/setPrimary/delete/reorder) */
-    if (action === "listAnimalPhotos") {
-      const { tenant_id, animal_id } = body;
-      if (!tenant_id || !animal_id) return err("tenant_id and animal_id are required");
-      const { data, error } = await admin
-        .from("agriops_cattle_photos")
-        .select("*")
-        .eq("tenant_id", tenant_id)
-        .eq("animal_id", animal_id)
-        .order("sort_order", { ascending: true })
-        .order("created_at", { ascending: true });
-      if (error) throw error;
-      return ok(data);
-    }
-
-    if (action === "addAnimalPhoto") {
-      const { tenant_id, animal_id, tag, photo_url, photo_path, set_primary } = body;
-      if (!tenant_id || !animal_id || !tag || !photo_url || !photo_path) {
-        return err("tenant_id, animal_id, tag, photo_url, photo_path required");
-      }
-
-      const { data: existing, error: exErr } = await admin
-        .from("agriops_cattle_photos")
-        .select("id")
-        .eq("tenant_id", tenant_id)
-        .eq("animal_id", animal_id);
-      if (exErr) throw exErr;
-      const sort_order = existing?.length ?? 0;
-
-      const { data, error } = await admin
-        .from("agriops_cattle_photos")
-        .insert({
-          tenant_id,
-          animal_id,
-          tag,
-          photo_url,
-          photo_path,
-          is_primary: false,
-          sort_order,
-        })
-        .select("*")
-        .single();
-      if (error) throw error;
-
-      if (set_primary || (existing?.length ?? 0) === 0) {
-        await setPrimaryInternal(tenant_id, animal_id, data.id, photo_url);
-      }
-
-      return ok({ id: data.id });
-    }
-
-    if (action === "setPrimaryPhoto") {
-      const { tenant_id, animal_id, id } = body as {
-        tenant_id: string;
-        animal_id: number;
-        id: number;
-      };
-      if (!tenant_id || !animal_id || !id) return err("tenant_id, animal_id, id required");
-
-      const { data: photo, error: fErr } = await admin
-        .from("agriops_cattle_photos")
-        .select("photo_url")
-        .eq("tenant_id", tenant_id)
-        .eq("animal_id", animal_id)
-        .eq("id", id)
-        .maybeSingle();
-      if (fErr) throw fErr;
-      if (!photo) return err("photo not found", 404);
-
-      await setPrimaryInternal(tenant_id, animal_id, id, photo.photo_url);
-      return ok({ primary_set: true });
-    }
-
-    if (action === "deleteAnimalPhoto") {
-      const { tenant_id, animal_id, id, photo_path } = body as {
-        tenant_id: string;
-        animal_id: number;
-        id: number;
-        photo_path: string;
-      };
-      if (!tenant_id || !animal_id || !id || !photo_path)
-        return err("tenant_id, animal_id, id, photo_path required");
-
-      const { error } = await admin
-        .from("agriops_cattle_photos")
-        .delete()
-        .eq("tenant_id", tenant_id)
-        .eq("animal_id", animal_id)
-        .eq("id", id);
-      if (error) throw error;
-
-      await admin.storage.from(PHOTOS_BUCKET).remove([photo_path]).catch(() => {});
-      return ok({ deleted: true });
-    }
-
-    if (action === "reorderAnimalPhotos") {
-      const { tenant_id, animal_id, ordered_ids } = body as {
-        tenant_id: string;
-        animal_id: number;
-        ordered_ids: number[];
-      };
-      if (!tenant_id || !animal_id || !Array.isArray(ordered_ids)) {
-        return err("tenant_id, animal_id, ordered_ids[] are required");
-      }
-      for (let i = 0; i < ordered_ids.length; i++) {
-        const id = ordered_ids[i];
-        const { error } = await admin
-          .from("agriops_cattle_photos")
-          .update({ sort_order: i })
-          .eq("tenant_id", tenant_id)
-          .eq("animal_id", animal_id)
-          .eq("id", id);
-        if (error) throw error;
-      }
-      return ok({ reordered: true });
-    }
-
-    /* Unknown action */
-    return err(`Unknown action: ${action}`, 400);
-  } catch (e: any) {
-    console.error("API /api/cattle error:", e?.message || e, e);
-    return NextResponse.json(
-      { ok: false, error: e?.message || "Server error", details: e },
-      { status: 500 }
-    );
-  }
+export async function GET() {
+  return ok({
+    ok: true,
+    message: "cattle API ready",
+    actions: [
+      "list",
+      "upsert",
+      "delete",
+      "listByPaddock",
+      "moveToPaddock",
+    ],
+  });
 }
