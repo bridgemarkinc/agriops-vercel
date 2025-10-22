@@ -2,6 +2,9 @@
 import { NextResponse } from "next/server";
 import { createClient, SupabaseClient } from "@supabase/supabase-js";
 
+console.log("SUPABASE_URL:", process.env.NEXT_PUBLIC_SUPABASE_URL);
+console.log("SERVICE_ROLE loaded:", !!process.env.SUPABASE_SERVICE_ROLE);
+
 /* ───────────────── Env / Supabase ───────────────── */
 function getSupabase(): SupabaseClient {
   const url = process.env.NEXT_PUBLIC_SUPABASE_URL!;
