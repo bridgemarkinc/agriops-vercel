@@ -1,12 +1,17 @@
+// app/pasture/page.tsx
 "use client";
+
+export const dynamic = "force-dynamic";
+export const revalidate = 0;
+export const fetchCache = "force-no-store";
+export const runtime = "nodejs";
 
 import React, { useEffect, useMemo, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 
-
-/* ───────────────────────── Helpers ───────────────────────── */
+/* Helpers */
 function getDefaultTenant() {
   if (typeof window !== "undefined" && window.location?.hostname) {
     return process.env.NEXT_PUBLIC_TENANT || window.location.hostname;
@@ -14,15 +19,14 @@ function getDefaultTenant() {
   return process.env.NEXT_PUBLIC_TENANT || "demo";
 }
 
-/* ───────────────────────── Types ───────────────────────── */
+/* Types */
 type Paddock = {
   id: number;
   tenant_id: string;
   name: string;
   acres: number | null;
-  head_count?: number | null; // returned by listWithCounts
+  head_count?: number | null;
 };
-
 type SeedingRow = {
   id: number;
   paddock_id: number;
@@ -31,32 +35,24 @@ type SeedingRow = {
   rate_lb_ac: number | null;
   notes?: string | null;
 };
-
 type AmendmentRow = {
   id: number;
   paddock_id: number;
   product: string;
-  rate_unit_ac: string; // e.g., "50 lb/ac" or "1 ton/ac"
+  rate_unit_ac: string;
   notes?: string | null;
 };
 
-/* ─────────────────────── Component ─────────────────────── */
 export default function PastureMaintenancePage() {
-  // Tenant (local, no useTenant dependency)
   const [tenantId, setTenantId] = useState<string>(getDefaultTenant());
-
-  // Loading
   const [loading, setLoading] = useState(false);
 
-  // Paddock list + selection
   const [paddocks, setPaddocks] = useState<Paddock[]>([]);
   const [selected, setSelected] = useState<Paddock | null>(null);
 
-  // Details
   const [seedings, setSeedings] = useState<SeedingRow[]>([]);
   const [amends, setAmends] = useState<AmendmentRow[]>([]);
 
-  // Draft rows (create/edit)
   const [seedDraft, setSeedDraft] = useState<Partial<SeedingRow>>({
     seed_mix_name: "",
     species: "",
@@ -69,7 +65,6 @@ export default function PastureMaintenancePage() {
     notes: "",
   });
 
-  // Generic POST helper to your API
   async function api(action: string, body: any) {
     const res = await fetch("/api/paddocks", {
       method: "POST",
@@ -81,7 +76,6 @@ export default function PastureMaintenancePage() {
     return json.data;
   }
 
-  // Load paddocks with cattle counts
   async function loadPaddocks() {
     if (!tenantId) return;
     setLoading(true);
@@ -95,7 +89,6 @@ export default function PastureMaintenancePage() {
     }
   }
 
-  // When a paddock is selected, load its seeding & amendments
   async function openEditor(p: Paddock) {
     setSelected(p);
     try {
@@ -110,7 +103,6 @@ export default function PastureMaintenancePage() {
     }
   }
 
-  // Seeding CRUD
   async function saveSeeding() {
     if (!selected) return;
     const row = {
@@ -121,27 +113,17 @@ export default function PastureMaintenancePage() {
       notes: (seedDraft.notes || "").trim() || null,
     };
     if (!row.seed_mix_name) return alert("Seed mix name is required");
-    try {
-      await api("upsertSeeding", { tenant_id: tenantId, row });
-      setSeedDraft({ seed_mix_name: "", species: "", rate_lb_ac: null, notes: "" });
-      await openEditor(selected);
-    } catch (e: any) {
-      alert(e.message || "Failed to save seeding");
-    }
+    await api("upsertSeeding", { tenant_id: tenantId, row });
+    setSeedDraft({ seed_mix_name: "", species: "", rate_lb_ac: null, notes: "" });
+    await openEditor(selected);
   }
-
   async function deleteSeeding(id: number) {
     if (!selected) return;
     if (!confirm("Delete this seeding row?")) return;
-    try {
-      await api("deleteSeeding", { tenant_id: tenantId, id });
-      await openEditor(selected);
-    } catch (e: any) {
-      alert(e.message || "Failed to delete seeding");
-    }
+    await api("deleteSeeding", { tenant_id: tenantId, id });
+    await openEditor(selected);
   }
 
-  // Amendment CRUD
   async function saveAmendment() {
     if (!selected) return;
     const row = {
@@ -151,24 +133,15 @@ export default function PastureMaintenancePage() {
       notes: (amendDraft.notes || "").trim() || null,
     };
     if (!row.product) return alert("Product is required");
-    try {
-      await api("upsertAmendment", { tenant_id: tenantId, row });
-      setAmendDraft({ product: "", rate_unit_ac: "", notes: "" });
-      await openEditor(selected);
-    } catch (e: any) {
-      alert(e.message || "Failed to save amendment");
-    }
+    await api("upsertAmendment", { tenant_id: tenantId, row });
+    setAmendDraft({ product: "", rate_unit_ac: "", notes: "" });
+    await openEditor(selected);
   }
-
   async function deleteAmendment(id: number) {
     if (!selected) return;
     if (!confirm("Delete this amendment?")) return;
-    try {
-      await api("deleteAmendment", { tenant_id: tenantId, id });
-      await openEditor(selected);
-    } catch (e: any) {
-      alert(e.message || "Failed to delete amendment");
-    }
+    await api("deleteAmendment", { tenant_id: tenantId, id });
+    await openEditor(selected);
   }
 
   useEffect(() => {
@@ -181,11 +154,8 @@ export default function PastureMaintenancePage() {
   return (
     <div className="min-h-screen bg-slate-50">
       <div className="max-w-6xl mx-auto px-4 py-6 space-y-6">
-        {/* Lightweight header (page-level) */}
         <header className="flex flex-wrap items-center justify-between gap-3">
           <h1 className="text-xl font-semibold">{title}</h1>
-
-          {/* Tenant picker (local) */}
           <div className="flex items-center gap-2">
             <Input
               className="w-64"
@@ -199,7 +169,6 @@ export default function PastureMaintenancePage() {
           </div>
         </header>
 
-        {/* Paddock list */}
         <div className="border rounded-xl bg-white">
           <div className="px-4 py-3 border-b bg-slate-50 rounded-t-xl flex items-center justify-between">
             <div className="font-medium">Paddocks</div>
@@ -240,7 +209,6 @@ export default function PastureMaintenancePage() {
           </div>
         </div>
 
-        {/* Drawer / panel for selected paddock */}
         {selected && (
           <div className="border rounded-xl bg-white p-4">
             <div className="flex items-center justify-between">
@@ -252,7 +220,6 @@ export default function PastureMaintenancePage() {
               </Button>
             </div>
 
-            {/* Seeding */}
             <div className="mt-4">
               <div className="font-medium mb-2">Seeding (mixes)</div>
               <div className="grid md:grid-cols-4 gap-2">
@@ -342,7 +309,6 @@ export default function PastureMaintenancePage() {
               </div>
             </div>
 
-            {/* Amendments */}
             <div className="mt-6">
               <div className="font-medium mb-2">Soil Amendments</div>
               <div className="grid md:grid-cols-3 gap-2">
@@ -358,9 +324,7 @@ export default function PastureMaintenancePage() {
                   <Label>Rate (unit/ac)</Label>
                   <Input
                     value={amendDraft.rate_unit_ac || ""}
-                    onChange={(e) =>
-                      setAmendDraft((d) => ({ ...d, rate_unit_ac: e.target.value }))
-                    }
+                    onChange={(e) => setAmendDraft((d) => ({ ...d, rate_unit_ac: e.target.value }))}
                     placeholder="e.g., 1 ton/ac or 50 lb/ac"
                   />
                 </div>

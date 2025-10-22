@@ -1,21 +1,20 @@
 // app/not-found.tsx
-// Server Component only: no "use client", no imports.
-
+// Server Component — no "use client", no route options, no hooks.
 export default function NotFound() {
   return (
-    <div className="min-h-screen grid place-items-center p-8">
-      <div className="text-center">
-        <h1 className="text-2xl font-semibold">Page not found</h1>
-        <p className="text-slate-600 mt-2">
-          The page you requested does not exist.
-        </p>
-        <a
-          href="/"
-          className="inline-block mt-4 px-4 py-2 rounded-md border border-slate-300 hover:bg-slate-50"
-        >
-          Go home
-        </a>
-      </div>
-    </div>
+    <html lang="en">
+      <body>
+        <main style={{ padding: 24, fontFamily: "system-ui, sans-serif" }}>
+          <h1 style={{ fontSize: 22, marginBottom: 8 }}>Page not found</h1>
+          <p>We couldn't find what you were looking for.</p>
+          <p style={{ marginTop: 16 }}>
+            <a href="/" style={{ color: "#064e3b", textDecoration: "underline" }}>
+              Go back home
+            </a>
+          </p>
+        </main>
+      </body>
+    </html>
   );
 }
+

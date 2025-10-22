@@ -1,14 +1,15 @@
 // app/page.tsx
-// ✅ Server component (no "use client" here)
+"use client";
 
-// If you want zero caching:
-export const revalidate = 0;               // must be a number or false
-export const dynamic = "force-dynamic";
-export const fetchCache = "force-no-store";
-
+import React from "react";
 import AgriOps from "@/components/AgriOps";
 
-export default function HomePage() {
-  // AgriOps is a client component and can render just fine inside a server page
+// Keep this page purely client to avoid accidental static prerender issues.
+export const dynamic = "force-dynamic";
+export const revalidate = 0;
+export const fetchCache = "force-no-store";
+export const runtime = "nodejs";
+
+export default function Page() {
   return <AgriOps />;
 }
