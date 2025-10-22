@@ -1,54 +1,69 @@
-// app/pasture/page.tsx
 "use client";
 
-
-import React, { useEffect, useMemo, useState } from "react";
+import React, { useEffect, useMemo, useRef, useState } from "react";
+import { createClient, SupabaseClient } from "@supabase/supabase-js";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 
-/* Helpers */
-function getDefaultTenant() {
-  if (typeof window !== "undefined" && window.location?.hostname) {
-    return process.env.NEXT_PUBLIC_TENANT || window.location.hostname;
-  }
-  return process.env.NEXT_PUBLIC_TENANT || "demo";
+/* ───────────────────────── Supabase (browser) ───────────────────────── */
+const SUPA_URL = process.env.NEXT_PUBLIC_SUPABASE_URL || "";
+const SUPA_ANON = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || "";
+let supabase: SupabaseClient | null = null;
+if (typeof window !== "undefined" && SUPA_URL.startsWith("http")) {
+  supabase = createClient(SUPA_URL, SUPA_ANON, {
+    realtime: { params: { eventsPerSecond: 5 } },
+  });
 }
 
-/* Types */
+/* ───────────────────────── Types ───────────────────────── */
 type Paddock = {
   id: number;
   tenant_id: string;
   name: string;
   acres: number | null;
-  head_count?: number | null;
+  head_count: number;
 };
+
 type SeedingRow = {
   id: number;
   paddock_id: number;
   seed_mix_name: string;
   species: string;
   rate_lb_ac: number | null;
-  notes?: string | null;
+  notes: string | null;
 };
+
 type AmendmentRow = {
   id: number;
   paddock_id: number;
   product: string;
   rate_unit_ac: string;
-  notes?: string | null;
+  notes: string | null;
 };
 
+/* ───────────────────────── Component ───────────────────────── */
 export default function PastureMaintenancePage() {
-  const [tenantId, setTenantId] = useState<string>(getDefaultTenant());
+  // You already keep tenantId in your header/context; read it from there if you prefer.
+  const [tenantId, setTenantId] = useState<string>(
+    typeof window !== "undefined"
+      ? (process.env.NEXT_PUBLIC_TENANT || window.location.hostname || "demo")
+      : (process.env.NEXT_PUBLIC_TENANT || "demo")
+  );
+
   const [loading, setLoading] = useState(false);
-
   const [paddocks, setPaddocks] = useState<Paddock[]>([]);
-  const [selected, setSelected] = useState<Paddock | null>(null);
+  const [filter, setFilter] = useState("");
 
+  const [selected, setSelected] = useState<Paddock | null>(null);
   const [seedings, setSeedings] = useState<SeedingRow[]>([]);
   const [amends, setAmends] = useState<AmendmentRow[]>([]);
 
+  // create/edit paddock
+  const [pdName, setPdName] = useState("");
+  const [pdAcres, setPdAcres] = useState<string>("");
+
+  // drafts
   const [seedDraft, setSeedDraft] = useState<Partial<SeedingRow>>({
     seed_mix_name: "",
     species: "",
@@ -61,7 +76,8 @@ export default function PastureMaintenancePage() {
     notes: "",
   });
 
-  async function api(action: string, body: any) {
+  /* ───────────────────── Helpers (API) ───────────────────── */
+  async function api<T = any>(action: string, body: any): Promise<T> {
     const res = await fetch("/api/paddocks", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -69,15 +85,15 @@ export default function PastureMaintenancePage() {
     });
     const json = await res.json();
     if (!res.ok || !json.ok) throw new Error(json.error || "Request failed");
-    return json.data;
+    return json.data as T;
   }
 
   async function loadPaddocks() {
     if (!tenantId) return;
     setLoading(true);
     try {
-      const data = await api("listWithCounts", { tenant_id: tenantId });
-      setPaddocks(data || []);
+      const data = await api<Paddock[]>("listWithCounts", { tenant_id: tenantId });
+      setPaddocks(data ?? []);
     } catch (e: any) {
       alert(e.message || "Failed to load paddocks");
     } finally {
@@ -89,16 +105,45 @@ export default function PastureMaintenancePage() {
     setSelected(p);
     try {
       const [s, a] = await Promise.all([
-        api("listSeeding", { tenant_id: tenantId, paddock_id: p.id }),
-        api("listAmendments", { tenant_id: tenantId, paddock_id: p.id }),
+        api<SeedingRow[]>("listSeeding", { tenant_id: tenantId, paddock_id: p.id }),
+        api<AmendmentRow[]>("listAmendments", { tenant_id: tenantId, paddock_id: p.id }),
       ]);
-      setSeedings(s || []);
-      setAmends(a || []);
+      setSeedings(s ?? []);
+      setAmends(a ?? []);
     } catch (e: any) {
       alert(e.message || "Failed to load paddock details");
     }
   }
 
+  /* ───────────────── Paddock CRUD ───────────────── */
+  async function createPaddock() {
+    if (!pdName.trim()) return alert("Paddock name is required");
+    const row = {
+      name: pdName.trim(),
+      acres: pdAcres ? Number(pdAcres) : null,
+    };
+    try {
+      await api("upsertPaddock", { tenant_id: tenantId, row });
+      setPdName("");
+      setPdAcres("");
+      await loadPaddocks();
+    } catch (e: any) {
+      alert(e.message || "Failed to create paddock");
+    }
+  }
+
+  async function deletePaddock(p: Paddock) {
+    if (!confirm(`Delete paddock "${p.name}"? This cannot be undone.`)) return;
+    try {
+      await api("deletePaddock", { tenant_id: tenantId, id: p.id });
+      if (selected?.id === p.id) setSelected(null);
+      await loadPaddocks();
+    } catch (e: any) {
+      alert(e.message || "Failed to delete paddock");
+    }
+  }
+
+  /* ───────────────── Seeding CRUD ───────────────── */
   async function saveSeeding() {
     if (!selected) return;
     const row = {
@@ -109,17 +154,27 @@ export default function PastureMaintenancePage() {
       notes: (seedDraft.notes || "").trim() || null,
     };
     if (!row.seed_mix_name) return alert("Seed mix name is required");
-    await api("upsertSeeding", { tenant_id: tenantId, row });
-    setSeedDraft({ seed_mix_name: "", species: "", rate_lb_ac: null, notes: "" });
-    await openEditor(selected);
-  }
-  async function deleteSeeding(id: number) {
-    if (!selected) return;
-    if (!confirm("Delete this seeding row?")) return;
-    await api("deleteSeeding", { tenant_id: tenantId, id });
-    await openEditor(selected);
+    try {
+      await api("upsertSeeding", { tenant_id: tenantId, row });
+      setSeedDraft({ seed_mix_name: "", species: "", rate_lb_ac: null, notes: "" });
+      await openEditor(selected);
+    } catch (e: any) {
+      alert(e.message || "Failed to save seeding");
+    }
   }
 
+  async function removeSeeding(id: number) {
+    if (!selected) return;
+    if (!confirm("Delete this seeding row?")) return;
+    try {
+      await api("deleteSeeding", { tenant_id: tenantId, id });
+      await openEditor(selected);
+    } catch (e: any) {
+      alert(e.message || "Failed to delete seeding");
+    }
+  }
+
+  /* ───────────────── Amendments CRUD ───────────────── */
   async function saveAmendment() {
     if (!selected) return;
     const row = {
@@ -129,46 +184,203 @@ export default function PastureMaintenancePage() {
       notes: (amendDraft.notes || "").trim() || null,
     };
     if (!row.product) return alert("Product is required");
-    await api("upsertAmendment", { tenant_id: tenantId, row });
-    setAmendDraft({ product: "", rate_unit_ac: "", notes: "" });
-    await openEditor(selected);
-  }
-  async function deleteAmendment(id: number) {
-    if (!selected) return;
-    if (!confirm("Delete this amendment?")) return;
-    await api("deleteAmendment", { tenant_id: tenantId, id });
-    await openEditor(selected);
+    try {
+      await api("upsertAmendment", { tenant_id: tenantId, row });
+      setAmendDraft({ product: "", rate_unit_ac: "", notes: "" });
+      await openEditor(selected);
+    } catch (e: any) {
+      alert(e.message || "Failed to save amendment");
+    }
   }
 
+  async function removeAmendment(id: number) {
+    if (!selected) return;
+    if (!confirm("Delete this amendment?")) return;
+    try {
+      await api("deleteAmendment", { tenant_id: tenantId, id });
+      await openEditor(selected);
+    } catch (e: any) {
+      alert(e.message || "Failed to delete amendment");
+    }
+  }
+
+  /* ───────────────── Realtime wiring ─────────────────
+     We listen to:
+       - agriops_paddocks (insert/update/delete)  → refresh paddock list
+       - agriops_cattle   (insert/update/delete)  → refresh head counts
+       - agriops_paddock_seeding (i/u/d)          → refresh selected paddock seeding
+       - agriops_paddock_amendments (i/u/d)       → refresh selected paddock amendments
+     All are scoped by tenant_id for safety/perf.
+  ---------------------------------------------------------------- */
+  const paddockRefreshTimer = useRef<number | null>(null);
+  const detailRefreshTimer = useRef<number | null>(null);
+
+  const debouncedPaddockRefresh = () => {
+    if (paddockRefreshTimer.current) window.clearTimeout(paddockRefreshTimer.current);
+    paddockRefreshTimer.current = window.setTimeout(() => {
+      loadPaddocks().catch(() => {});
+    }, 250);
+  };
+
+  const debouncedDetailRefresh = () => {
+    if (!selected) return;
+    if (detailRefreshTimer.current) window.clearTimeout(detailRefreshTimer.current);
+    detailRefreshTimer.current = window.setTimeout(() => {
+      openEditor(selected).catch(() => {});
+    }, 250);
+  };
+
   useEffect(() => {
-    loadPaddocks().catch(() => {});
+    if (!supabase || !tenantId) return;
+
+    const channels = [];
+
+    // Paddocks table (structure/name assumes your SQL from earlier steps)
+    channels.push(
+      supabase
+        .channel(`paddocks-${tenantId}`)
+        .on(
+          "postgres_changes",
+          {
+            event: "*",
+            schema: "public",
+            table: "agriops_paddocks",
+            filter: `tenant_id=eq.${tenantId}`,
+          },
+          debouncedPaddockRefresh
+        )
+        .subscribe()
+    );
+
+    // Cattle changes affect head counts (view derives from agriops_cattle)
+    channels.push(
+      supabase
+        .channel(`cattle-${tenantId}`)
+        .on(
+          "postgres_changes",
+          {
+            event: "*",
+            schema: "public",
+            table: "agriops_cattle",
+            filter: `tenant_id=eq.${tenantId}`,
+          },
+          debouncedPaddockRefresh
+        )
+        .subscribe()
+    );
+
+    // Seeding rows for selected paddock
+    channels.push(
+      supabase
+        .channel(`seed-${tenantId}`)
+        .on(
+          "postgres_changes",
+          {
+            event: "*",
+            schema: "public",
+            table: "agriops_paddock_seeding",
+            filter: `tenant_id=eq.${tenantId}`,
+          },
+          debouncedDetailRefresh
+        )
+        .subscribe()
+    );
+
+    // Amendments rows for selected paddock
+    channels.push(
+      supabase
+        .channel(`amend-${tenantId}`)
+        .on(
+          "postgres_changes",
+          {
+            event: "*",
+            schema: "public",
+            table: "agriops_paddock_amendments",
+            filter: `tenant_id=eq.${tenantId}`,
+          },
+          debouncedDetailRefresh
+        )
+        .subscribe()
+    );
+
+    return () => {
+      channels.forEach((ch) => {
+        try {
+          supabase?.removeChannel(ch);
+        } catch {}
+      });
+      if (paddockRefreshTimer.current) window.clearTimeout(paddockRefreshTimer.current);
+      if (detailRefreshTimer.current) window.clearTimeout(detailRefreshTimer.current);
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [tenantId, selected?.id]); // re-scope when tenant or selected paddock changes
+
+  /* ───────────────── Effects ───────────────── */
+  useEffect(() => {
+    if (tenantId) loadPaddocks().catch(() => {});
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [tenantId]);
 
-  const title = useMemo(() => "Pasture Maintenance", []);
+  /* ───────────────── Derived ───────────────── */
+  const filtered = useMemo(() => {
+    const q = filter.trim().toLowerCase();
+    if (!q) return paddocks;
+    return paddocks.filter((p) => p.name.toLowerCase().includes(q));
+  }, [paddocks, filter]);
 
+  /* ───────────────── Render ───────────────── */
   return (
     <div className="min-h-screen bg-slate-50">
       <div className="max-w-6xl mx-auto px-4 py-6 space-y-6">
-        <header className="flex flex-wrap items-center justify-between gap-3">
-          <h1 className="text-xl font-semibold">{title}</h1>
+        {/* Page header */}
+        <header className="flex items-center justify-between gap-3">
+          <h1 className="text-xl font-semibold">Pasture Maintenance</h1>
           <div className="flex items-center gap-2">
             <Input
-              className="w-64"
-              placeholder="Tenant (domain)"
-              value={tenantId}
-              onChange={(e) => setTenantId(e.target.value)}
+              value={filter}
+              onChange={(e) => setFilter(e.target.value)}
+              placeholder="Filter paddocks…"
+              className="w-56"
             />
             <Button variant="outline" onClick={loadPaddocks} disabled={loading}>
-              {loading ? "Loading…" : "Load"}
+              {loading ? "Loading…" : "Refresh"}
             </Button>
           </div>
         </header>
 
+        {/* Create paddock */}
+        <div className="border rounded-xl bg-white p-4">
+          <div className="font-medium mb-2">Add Paddock</div>
+          <div className="grid md:grid-cols-4 gap-2">
+            <div className="md:col-span-2">
+              <Label>Name</Label>
+              <Input
+                value={pdName}
+                onChange={(e) => setPdName(e.target.value)}
+                placeholder="e.g., South Lot"
+              />
+            </div>
+            <div>
+              <Label>Acres</Label>
+              <Input
+                type="number"
+                inputMode="decimal"
+                value={pdAcres}
+                onChange={(e) => setPdAcres(e.target.value)}
+                placeholder="e.g., 12.5"
+              />
+            </div>
+            <div className="flex items-end">
+              <Button onClick={createPaddock}>Save Paddock</Button>
+            </div>
+          </div>
+        </div>
+
+        {/* Paddock list */}
         <div className="border rounded-xl bg-white">
           <div className="px-4 py-3 border-b bg-slate-50 rounded-t-xl flex items-center justify-between">
             <div className="font-medium">Paddocks</div>
-            <div className="text-sm text-slate-500">{paddocks.length} total</div>
+            <div className="text-sm text-slate-500">{filtered.length} shown</div>
           </div>
           <div className="overflow-auto">
             <table className="w-full text-sm">
@@ -177,26 +389,34 @@ export default function PastureMaintenancePage() {
                   <th className="text-left p-2">Name</th>
                   <th className="text-left p-2">Acres</th>
                   <th className="text-left p-2">Cattle (head)</th>
-                  <th className="text-right p-2 w-32">Actions</th>
+                  <th className="text-right p-2 w-40">Actions</th>
                 </tr>
               </thead>
               <tbody>
-                {paddocks.map((p) => (
+                {filtered.map((p) => (
                   <tr key={p.id} className="border-t">
                     <td className="p-2">{p.name}</td>
                     <td className="p-2">{p.acres ?? "-"}</td>
-                    <td className="p-2">{p.head_count ?? 0}</td>
-                    <td className="p-2 text-right">
+                    <td className="p-2">{p.head_count}</td>
+                    <td className="p-2 text-right space-x-2">
                       <Button size="sm" variant="outline" onClick={() => openEditor(p)}>
                         Edit
+                      </Button>
+                      <Button
+                        size="sm"
+                        variant="outline"
+                        onClick={() => deletePaddock(p)}
+                        className="text-red-700"
+                      >
+                        Delete
                       </Button>
                     </td>
                   </tr>
                 ))}
-                {paddocks.length === 0 && (
+                {filtered.length === 0 && (
                   <tr>
                     <td className="p-2" colSpan={4}>
-                      No paddocks yet.
+                      No paddocks match your filter.
                     </td>
                   </tr>
                 )}
@@ -205,6 +425,7 @@ export default function PastureMaintenancePage() {
           </div>
         </div>
 
+        {/* Drawer / panel for selected paddock */}
         {selected && (
           <div className="border rounded-xl bg-white p-4">
             <div className="flex items-center justify-between">
@@ -216,6 +437,7 @@ export default function PastureMaintenancePage() {
               </Button>
             </div>
 
+            {/* Seeding */}
             <div className="mt-4">
               <div className="font-medium mb-2">Seeding (mixes)</div>
               <div className="grid md:grid-cols-4 gap-2">
@@ -233,7 +455,9 @@ export default function PastureMaintenancePage() {
                   <Label>Species (comma-separated)</Label>
                   <Input
                     value={seedDraft.species || ""}
-                    onChange={(e) => setSeedDraft((d) => ({ ...d, species: e.target.value }))}
+                    onChange={(e) =>
+                      setSeedDraft((d) => ({ ...d, species: e.target.value }))
+                    }
                     placeholder="ryegrass, clover, orchardgrass"
                   />
                 </div>
@@ -241,6 +465,7 @@ export default function PastureMaintenancePage() {
                   <Label>Rate (lb/ac)</Label>
                   <Input
                     type="number"
+                    inputMode="decimal"
                     value={seedDraft.rate_lb_ac ?? ""}
                     onChange={(e) =>
                       setSeedDraft((d) => ({
@@ -286,7 +511,7 @@ export default function PastureMaintenancePage() {
                           <Button
                             size="sm"
                             variant="outline"
-                            onClick={() => deleteSeeding(row.id)}
+                            onClick={() => removeSeeding(row.id)}
                           >
                             Delete
                           </Button>
@@ -305,6 +530,7 @@ export default function PastureMaintenancePage() {
               </div>
             </div>
 
+            {/* Amendments */}
             <div className="mt-6">
               <div className="font-medium mb-2">Soil Amendments</div>
               <div className="grid md:grid-cols-3 gap-2">
@@ -320,7 +546,9 @@ export default function PastureMaintenancePage() {
                   <Label>Rate (unit/ac)</Label>
                   <Input
                     value={amendDraft.rate_unit_ac || ""}
-                    onChange={(e) => setAmendDraft((d) => ({ ...d, rate_unit_ac: e.target.value }))}
+                    onChange={(e) =>
+                      setAmendDraft((d) => ({ ...d, rate_unit_ac: e.target.value }))
+                    }
                     placeholder="e.g., 1 ton/ac or 50 lb/ac"
                   />
                 </div>
@@ -357,7 +585,7 @@ export default function PastureMaintenancePage() {
                           <Button
                             size="sm"
                             variant="outline"
-                            onClick={() => deleteAmendment(row.id)}
+                            onClick={() => removeAmendment(row.id)}
                           >
                             Delete
                           </Button>
