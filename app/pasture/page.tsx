@@ -1,10 +1,11 @@
 "use client";
 
 import React, { useEffect, useMemo, useRef, useState } from "react";
-import { createClient, SupabaseClient } from "@supabase/supabase-js";
+import { createClient, SupabaseClient, type RealtimeChannel } from "@supabase/supabase-js";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+
 
 /* ───────────────────────── Supabase (browser) ───────────────────────── */
 const SUPA_URL = process.env.NEXT_PUBLIC_SUPABASE_URL || "";
@@ -231,89 +232,68 @@ export default function PastureMaintenancePage() {
   };
 
   useEffect(() => {
-    if (!supabase || !tenantId) return;
+  if (!supabase || !tenantId) return;
 
-    const channels = [];
+  const channels: RealtimeChannel[] = [];  // <-- add the type
 
-    // Paddocks table (structure/name assumes your SQL from earlier steps)
-    channels.push(
-      supabase
-        .channel(`paddocks-${tenantId}`)
-        .on(
-          "postgres_changes",
-          {
-            event: "*",
-            schema: "public",
-            table: "agriops_paddocks",
-            filter: `tenant_id=eq.${tenantId}`,
-          },
-          debouncedPaddockRefresh
-        )
-        .subscribe()
-    );
+  // Paddocks table
+  channels.push(
+    supabase
+      .channel(`paddocks-${tenantId}`)
+      .on(
+        "postgres_changes",
+        { event: "*", schema: "public", table: "agriops_paddocks", filter: `tenant_id=eq.${tenantId}` },
+        debouncedPaddockRefresh
+      )
+      .subscribe()
+  );
 
-    // Cattle changes affect head counts (view derives from agriops_cattle)
-    channels.push(
-      supabase
-        .channel(`cattle-${tenantId}`)
-        .on(
-          "postgres_changes",
-          {
-            event: "*",
-            schema: "public",
-            table: "agriops_cattle",
-            filter: `tenant_id=eq.${tenantId}`,
-          },
-          debouncedPaddockRefresh
-        )
-        .subscribe()
-    );
+  // Cattle (affects head counts)
+  channels.push(
+    supabase
+      .channel(`cattle-${tenantId}`)
+      .on(
+        "postgres_changes",
+        { event: "*", schema: "public", table: "agriops_cattle", filter: `tenant_id=eq.${tenantId}` },
+        debouncedPaddockRefresh
+      )
+      .subscribe()
+  );
 
-    // Seeding rows for selected paddock
-    channels.push(
-      supabase
-        .channel(`seed-${tenantId}`)
-        .on(
-          "postgres_changes",
-          {
-            event: "*",
-            schema: "public",
-            table: "agriops_paddock_seeding",
-            filter: `tenant_id=eq.${tenantId}`,
-          },
-          debouncedDetailRefresh
-        )
-        .subscribe()
-    );
+  // Seeding rows
+  channels.push(
+    supabase
+      .channel(`seed-${tenantId}`)
+      .on(
+        "postgres_changes",
+        { event: "*", schema: "public", table: "agriops_paddock_seeding", filter: `tenant_id=eq.${tenantId}` },
+        debouncedDetailRefresh
+      )
+      .subscribe()
+  );
 
-    // Amendments rows for selected paddock
-    channels.push(
-      supabase
-        .channel(`amend-${tenantId}`)
-        .on(
-          "postgres_changes",
-          {
-            event: "*",
-            schema: "public",
-            table: "agriops_paddock_amendments",
-            filter: `tenant_id=eq.${tenantId}`,
-          },
-          debouncedDetailRefresh
-        )
-        .subscribe()
-    );
+  // Amendments rows
+  channels.push(
+    supabase
+      .channel(`amend-${tenantId}`)
+      .on(
+        "postgres_changes",
+        { event: "*", schema: "public", table: "agriops_paddock_amendments", filter: `tenant_id=eq.${tenantId}` },
+        debouncedDetailRefresh
+      )
+      .subscribe()
+  );
 
-    return () => {
-      channels.forEach((ch) => {
-        try {
-          supabase?.removeChannel(ch);
-        } catch {}
-      });
-      if (paddockRefreshTimer.current) window.clearTimeout(paddockRefreshTimer.current);
-      if (detailRefreshTimer.current) window.clearTimeout(detailRefreshTimer.current);
-    };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [tenantId, selected?.id]); // re-scope when tenant or selected paddock changes
+  return () => {
+    channels.forEach((ch) => {
+      try { supabase.removeChannel(ch); } catch {}
+    });
+    if (paddockRefreshTimer.current) window.clearTimeout(paddockRefreshTimer.current);
+    if (detailRefreshTimer.current) window.clearTimeout(detailRefreshTimer.current);
+  };
+// eslint-disable-next-line react-hooks/exhaustive-deps
+}, [tenantId, selected?.id]);
+
 
   /* ───────────────── Effects ───────────────── */
   useEffect(() => {
