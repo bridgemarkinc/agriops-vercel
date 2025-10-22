@@ -6,11 +6,6 @@ export const dynamic = "force-dynamic";
 export const fetchCache = "force-no-store";
 export const runtime = "nodejs";
 
-export default function PastureLayout({
-  children,
-}: {
-  children: React.ReactNode;
-}) {
-  // no wrappers needed; just pass through
+export default function PastureLayout({ children }: { children: React.ReactNode }) {
   return children;
 }

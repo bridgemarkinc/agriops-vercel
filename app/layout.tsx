@@ -2,6 +2,7 @@ import "./globals.css";
 import React from "react";
 import Link from "next/link";
 import { TenantProvider, useTenant } from "@/components/tenant";
+import AppHeader from "@/components/AppHeader";
 
 export const metadata = { title: "AgriOps", description: "Grazing & Feed Planner" };
 
@@ -61,7 +62,7 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
     <html lang="en">
       <body className="min-h-screen bg-slate-50">
         <TenantProvider>
-          <Header />
+          <AppHeader />
           <main className="max-w-6xl mx-auto px-4 py-6">
             {children}
           </main>
