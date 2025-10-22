@@ -5,10 +5,6 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 
-export const dynamic = "force-dynamic";
-export const revalidate = 1;
-export const fetchCache = "force-no-store";
-export const runtime = "nodejs";
 
 /* ───────────────────────── Helpers ───────────────────────── */
 function getDefaultTenant() {
