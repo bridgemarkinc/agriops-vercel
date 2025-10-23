@@ -5,6 +5,18 @@ import { createClient, SupabaseClient } from "@supabase/supabase-js";
 export const dynamic = "force-dynamic"; // always run on server
 export const runtime = "nodejs";
 
+// Small runtime helpers to narrow unknown JSON safely.
+function readString(obj: any, key: string): string | null {
+  const v = obj?.[key];
+  return typeof v === "string" && v.trim() ? v : null;
+}
+function readNumber(obj: any, key: string): number | null {
+  const v = obj?.[key];
+  const n = typeof v === "number" ? v : Number(v);
+  return Number.isFinite(n) ? n : null;
+}
+
+
 /** Server-only client (service role). Do NOT export this. */
 function getServiceClient(): SupabaseClient {
   const url =
@@ -165,154 +177,196 @@ export async function POST(req: Request) {
       }
 
       /* ───────────── Photos ───────────── */
-      case "listAnimalPhotos": {
-        const { tenant_id, animal_id } = body;
-        const { data, error } = await supabase
-          .from("agriops_animal_photos")
-          .select("*")
-          .eq("tenant_id", tenant_id)
-          .eq("animal_id", animal_id)
-          .order("sort_order", { ascending: true })
-          .order("id", { ascending: true });
-        if (error) throw error;
-        return NextResponse.json({ ok: true, data });
-      }
+      // inside POST(req) { switch(action) { ... } }
+case "listAnimalPhotos": {
+  const tenant_id = readString(body, "tenant_id");
+  const animal_id = readNumber(body, "animal_id");
+  if (!tenant_id || animal_id == null) {
+    return NextResponse.json(
+      { ok: false, error: "tenant_id and animal_id are required" },
+      { status: 400 }
+    );
+  }
 
-      case "addAnimalPhoto": {
-        const { tenant_id, animal_id, tag, photo_url, photo_path, set_primary } =
-          body;
-        // insert photo
-        const { data: ins, error: insErr } = await supabase
-          .from("agriops_animal_photos")
-          .insert({
-            tenant_id,
-            animal_id,
-            tag,
-            photo_url,
-            photo_path,
-            is_primary: false,
-          })
-          .select("*")
-          .maybeSingle();
-        if (insErr) throw insErr;
+  const { data, error } = await supabase
+    .from("agriops_cattle_photos")
+    .select("*")
+    .eq("tenant_id", tenant_id)
+    .eq("animal_id", animal_id)
+    .order("sort_order", { ascending: true })
+    .order("id", { ascending: true });
 
-        // optionally set primary
-        if (set_primary && ins?.id) {
-          // Clear existing primary
-          await supabase
-            .from("agriops_animal_photos")
-            .update({ is_primary: false })
-            .eq("tenant_id", tenant_id)
-            .eq("animal_id", animal_id);
+  if (error) throw error;
+  return NextResponse.json({ ok: true, data });
+}
 
-          await supabase
-            .from("agriops_animal_photos")
-            .update({ is_primary: true })
-            .eq("tenant_id", tenant_id)
-            .eq("id", ins.id);
+case "addAnimalPhoto": {
+  const tenant_id = readString(body, "tenant_id");
+  const animal_id = readNumber(body, "animal_id");
+  const tag = readString(body, "tag");
+  const photo_url = readString(body, "photo_url");
+  const photo_path = readString(body, "photo_path");
+  const set_primary = !!body?.set_primary;
 
-          // reflect on animal record
-          await supabase
-            .from("agriops_cattle")
-            .update({ primary_photo_url: photo_url })
-            .eq("tenant_id", tenant_id)
-            .eq("id", animal_id);
-        }
-        return NextResponse.json({ ok: true, data: ins });
-      }
+  if (!tenant_id || animal_id == null || !tag || !photo_url || !photo_path) {
+    return NextResponse.json(
+      { ok: false, error: "tenant_id, animal_id, tag, photo_url, photo_path are required" },
+      { status: 400 }
+    );
+  }
 
-      case "setPrimaryPhoto": {
-        const { tenant_id, animal_id, id } = body;
+  // (optional) verify animal exists for tenant
+  const { data: animal, error: aerr } = await supabase
+    .from("agriops_cattle")
+    .select("id")
+    .eq("tenant_id", tenant_id)
+    .eq("id", animal_id)
+    .maybeSingle();
+  if (aerr) throw aerr;
+  if (!animal) {
+    return NextResponse.json({ ok: false, error: "Animal not found for tenant" }, { status: 400 });
+  }
 
-        // get url for chosen photo
-        const { data: ph, error: phErr } = await supabase
-          .from("agriops_animal_photos")
-          .select("photo_url")
-          .eq("tenant_id", tenant_id)
-          .eq("id", id)
-          .maybeSingle();
-        if (phErr) throw phErr;
+  const { data: row, error } = await supabase
+    .from("agriops_cattle_photos")
+    .insert({ tenant_id, animal_id, tag, photo_url, photo_path, is_primary: false })
+    .select()
+    .maybeSingle();
+  if (error) throw error;
 
-        // clear and set
-        await supabase
-          .from("agriops_animal_photos")
-          .update({ is_primary: false })
-          .eq("tenant_id", tenant_id)
-          .eq("animal_id", animal_id);
+  if (set_primary && row?.id) {
+    await supabase
+      .from("agriops_cattle_photos")
+      .update({ is_primary: false })
+      .eq("tenant_id", tenant_id)
+      .eq("animal_id", animal_id);
 
-        const { error: setErr } = await supabase
-          .from("agriops_animal_photos")
-          .update({ is_primary: true })
-          .eq("tenant_id", tenant_id)
-          .eq("id", id);
-        if (setErr) throw setErr;
+    await supabase
+      .from("agriops_cattle_photos")
+      .update({ is_primary: true })
+      .eq("tenant_id", tenant_id)
+      .eq("id", row.id);
 
-        // mirror on cattle
-        const { error: updErr } = await supabase
-          .from("agriops_cattle")
-          .update({ primary_photo_url: ph?.photo_url ?? null })
-          .eq("tenant_id", tenant_id)
-          .eq("id", animal_id);
-        if (updErr) throw updErr;
+    await supabase
+      .from("agriops_cattle")
+      .update({ primary_photo_url: photo_url })
+      .eq("tenant_id", tenant_id)
+      .eq("id", animal_id);
 
-        return NextResponse.json({ ok: true, data: true });
-      }
+    row.is_primary = true;
+  }
 
-      case "deleteAnimalPhoto": {
-        const { tenant_id, animal_id, id, photo_path } = body;
+  return NextResponse.json({ ok: true, data: row });
+}
 
-        // delete row
-        const { data: deleted, error } = await supabase
-          .from("agriops_animal_photos")
-          .delete()
-          .eq("tenant_id", tenant_id)
-          .eq("id", id)
-          .select("*")
-          .maybeSingle();
-        if (error) throw error;
 
-        // try to delete the storage object (ignore failures)
-        try {
-          await supabase.storage.from("cattle-photos").remove([photo_path]);
-        } catch {
-          /* ignore */
-        }
+case "setPrimaryPhoto": {
+  const tenant_id = readString(body, "tenant_id");
+  const animal_id = readNumber(body, "animal_id");
+  const id = readNumber(body, "id");
+  if (!tenant_id || animal_id == null || id == null) {
+    return NextResponse.json(
+      { ok: false, error: "tenant_id, animal_id and id are required" },
+      { status: 400 }
+    );
+  }
 
-        // if it was primary, clear animal.primary_photo_url
-        if (deleted?.is_primary) {
-          await supabase
-            .from("agriops_cattle")
-            .update({ primary_photo_url: null })
-            .eq("tenant_id", tenant_id)
-            .eq("id", animal_id);
-        }
-        return NextResponse.json({ ok: true, data: true });
-      }
+  const { data: photo, error: gerr } = await supabase
+    .from("agriops_cattle_photos")
+    .select("photo_url")
+    .eq("tenant_id", tenant_id)
+    .eq("animal_id", animal_id)
+    .eq("id", id)
+    .maybeSingle();
+  if (gerr) throw gerr;
+  if (!photo) return NextResponse.json({ ok: false, error: "Photo not found" }, { status: 404 });
 
-      case "reorderAnimalPhotos": {
-        const { tenant_id, animal_id, ordered_ids } = body as unknown as {
-  tenant_id: string;
-  animal_id: number;
-  ordered_ids: number[];
-};
-        if (!Array.isArray(ordered_ids)) {
-          return NextResponse.json({
-            ok: false,
-            error: "ordered_ids must be an array",
-          });
-        }
-        // Set sort_order = index for each id (simple loop)
-        for (let i = 0; i < ordered_ids.length; i++) {
-          const id = ordered_ids[i];
-          await supabase
-            .from("agriops_animal_photos")
-            .update({ sort_order: i })
-            .eq("tenant_id", tenant_id)
-            .eq("animal_id", animal_id)
-            .eq("id", id);
-        }
-        return NextResponse.json({ ok: true, data: true });
-      }
+  await supabase
+    .from("agriops_cattle_photos")
+    .update({ is_primary: false })
+    .eq("tenant_id", tenant_id)
+    .eq("animal_id", animal_id);
+
+  await supabase
+    .from("agriops_cattle_photos")
+    .update({ is_primary: true })
+    .eq("tenant_id", tenant_id)
+    .eq("id", id);
+
+  await supabase
+    .from("agriops_cattle")
+    .update({ primary_photo_url: photo.photo_url })
+    .eq("tenant_id", tenant_id)
+    .eq("id", animal_id);
+
+  return NextResponse.json({ ok: true, data: { id } });
+}
+
+
+case "deleteAnimalPhoto": {
+  const tenant_id = readString(body, "tenant_id");
+  const animal_id = readNumber(body, "animal_id");
+  const id = readNumber(body, "id");
+  const photo_path = readString(body, "photo_path");
+  if (!tenant_id || animal_id == null || id == null || !photo_path) {
+    return NextResponse.json(
+      { ok: false, error: "tenant_id, animal_id, id, photo_path are required" },
+      { status: 400 }
+    );
+  }
+
+  const { data: row, error } = await supabase
+    .from("agriops_cattle_photos")
+    .delete()
+    .eq("tenant_id", tenant_id)
+    .eq("animal_id", animal_id)
+    .eq("id", id)
+    .select()
+    .maybeSingle();
+  if (error) throw error;
+
+  // (optional) remove from storage with your service client if you have it available
+  // await supaStorage.remove([photo_path]);
+
+  if (row?.is_primary) {
+    await supabase
+      .from("agriops_cattle")
+      .update({ primary_photo_url: null })
+      .eq("tenant_id", tenant_id)
+      .eq("id", animal_id);
+  }
+
+  return NextResponse.json({ ok: true, data: { deleted: id } });
+}
+
+
+case "reorderAnimalPhotos": {
+  const tenant_id = readString(body, "tenant_id");
+  const animal_id = readNumber(body, "animal_id");
+  const ordered_ids = Array.isArray(body?.ordered_ids) ? body.ordered_ids : null;
+  if (!tenant_id || animal_id == null || !ordered_ids?.length) {
+    return NextResponse.json(
+      { ok: false, error: "tenant_id, animal_id and ordered_ids[] are required" },
+      { status: 400 }
+    );
+  }
+
+  let order = 10;
+  for (const pid of ordered_ids) {
+    const photoId = Number(pid);
+    if (!Number.isFinite(photoId)) continue;
+    await supabase
+      .from("agriops_cattle_photos")
+      .update({ sort_order: order })
+      .eq("tenant_id", tenant_id)
+      .eq("animal_id", animal_id)
+      .eq("id", photoId);
+    order += 10;
+  }
+  return NextResponse.json({ ok: true, data: { reordered: ordered_ids.length } });
+}
+
+
 
       default:
         return NextResponse.json(
