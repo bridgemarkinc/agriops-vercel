@@ -1,15 +1,18 @@
+// app/api/paddocks/route.ts
 import { NextResponse } from "next/server";
 import { createClient } from "@supabase/supabase-js";
 
 export const dynamic = "force-dynamic";
 
-/** Server-side Supabase with SERVICE ROLE (never expose in client). */
+/** Build a server-side Supabase client with the SERVICE ROLE key.
+ *  Never expose this in the browser.
+ *  We accept SUPABASE_URL or NEXT_PUBLIC_SUPABASE_URL for convenience.
+ */
 function getSupabaseService() {
-  const url = process.env.NEXT_PUBLIC_SUPABASE_URL!;
-  const service = process.env.SUPABASE_SERVICE_ROLE!;
-  if (!url || !service) {
-    throw new Error("Missing env: NEXT_PUBLIC_SUPABASE_URL and/or SUPABASE_SERVICE_ROLE");
-  }
+  const url =
+    process.env.SUPABASE_URL || process.env.NEXT_PUBLIC_SUPABASE_URL || "";
+  const service = process.env.SUPABASE_SERVICE_ROLE || "";
+  if (!url || !service) return null; // <-- don't throw; let the handler respond with JSON
   return createClient(url, service, {
     auth: { persistSession: false, autoRefreshToken: false },
   });
@@ -29,24 +32,43 @@ export async function OPTIONS() {
 }
 
 export async function POST(req: Request) {
+  const supa = getSupabaseService();
+  if (!supa) {
+    return NextResponse.json(
+      {
+        ok: false,
+        error:
+          "Missing env vars. Set SUPABASE_URL (or NEXT_PUBLIC_SUPABASE_URL) and SUPABASE_SERVICE_ROLE on the server.",
+      },
+      { status: 500 }
+    );
+  }
+
   try {
     const body = await readJson(req);
     if (!body) {
-      return NextResponse.json({ ok: false, error: "Invalid JSON body" }, { status: 400 });
+      return NextResponse.json(
+        { ok: false, error: "Invalid JSON body" },
+        { status: 400 }
+      );
     }
 
     const { action } = body as { action?: string };
     if (!action) {
-      return NextResponse.json({ ok: false, error: "Missing 'action'" }, { status: 400 });
+      return NextResponse.json(
+        { ok: false, error: "Missing 'action'" },
+        { status: 400 }
+      );
     }
-
-    const supa = getSupabaseService();
 
     switch (action) {
       case "listWithCounts": {
         const { tenant_id } = body as { tenant_id: string };
         if (!tenant_id) {
-          return NextResponse.json({ ok: false, error: "tenant_id is required" }, { status: 400 });
+          return NextResponse.json(
+            { ok: false, error: "tenant_id is required" },
+            { status: 400 }
+          );
         }
         const { data, error } = await supa
           .from("agriops_paddocks_with_counts")
@@ -58,20 +80,17 @@ export async function POST(req: Request) {
       }
 
       case "upsertPaddock": {
-        // 🔧 Make tenant_id consistent with your other upserts: merged server-side, not required inside `row`.
         const { tenant_id, row } = body as {
           tenant_id: string;
           row: { id?: number; name: string; acres?: number | null };
         };
-
         if (!tenant_id || !row?.name) {
           return NextResponse.json(
             { ok: false, error: "tenant_id and row.name are required" },
             { status: 400 }
           );
         }
-
-        const payload = { ...row, tenant_id }; // <-- merge tenant here
+        const payload = { ...row, tenant_id };
         const { data, error } = await supa
           .from("agriops_paddocks")
           .upsert(payload as any)
@@ -99,7 +118,10 @@ export async function POST(req: Request) {
       }
 
       case "listSeeding": {
-        const { tenant_id, paddock_id } = body as { tenant_id: string; paddock_id: number };
+        const { tenant_id, paddock_id } = body as {
+          tenant_id: string;
+          paddock_id: number;
+        };
         const { data, error } = await supa
           .from("agriops_paddock_seeding")
           .select("*")
@@ -124,7 +146,10 @@ export async function POST(req: Request) {
         };
         if (!tenant_id || !row?.paddock_id || !row?.seed_mix_name) {
           return NextResponse.json(
-            { ok: false, error: "tenant_id, paddock_id and seed_mix_name are required" },
+            {
+              ok: false,
+              error: "tenant_id, paddock_id and seed_mix_name are required",
+            },
             { status: 400 }
           );
         }
@@ -156,7 +181,10 @@ export async function POST(req: Request) {
       }
 
       case "listAmendments": {
-        const { tenant_id, paddock_id } = body as { tenant_id: string; paddock_id: number };
+        const { tenant_id, paddock_id } = body as {
+          tenant_id: string;
+          paddock_id: number;
+        };
         const { data, error } = await supa
           .from("agriops_paddock_amendments")
           .select("*")
@@ -170,7 +198,13 @@ export async function POST(req: Request) {
       case "upsertAmendment": {
         const { tenant_id, row } = body as {
           tenant_id: string;
-          row: { id?: number; paddock_id: number; product: string; rate_unit_ac: string; notes?: string | null };
+          row: {
+            id?: number;
+            paddock_id: number;
+            product: string;
+            rate_unit_ac: string;
+            notes?: string | null;
+          };
         };
         if (!tenant_id || !row?.paddock_id || !row?.product) {
           return NextResponse.json(
@@ -206,7 +240,10 @@ export async function POST(req: Request) {
       }
 
       default:
-        return NextResponse.json({ ok: false, error: `Unknown action: ${action}` }, { status: 400 });
+        return NextResponse.json(
+          { ok: false, error: `Unknown action: ${action}` },
+          { status: 400 }
+        );
     }
   } catch (err: any) {
     console.error("[/api/paddocks] error", err);
