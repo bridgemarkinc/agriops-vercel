@@ -1,11 +1,9 @@
 import { NextResponse } from "next/server";
-import { createClient, SupabaseClient } from "@supabase/supabase-js";
+import { createClient } from "@supabase/supabase-js";
 
-export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
-// ---------- helpers (NOT EXPORTED) ----------
-function getSupabaseService(): SupabaseClient {
+function getSupabaseService() {
   const url = process.env.NEXT_PUBLIC_SUPABASE_URL!;
   const service = process.env.SUPABASE_SERVICE_ROLE!;
   if (!url || !service) {
@@ -14,152 +12,156 @@ function getSupabaseService(): SupabaseClient {
   return createClient(url, service, { auth: { persistSession: false, autoRefreshToken: false } });
 }
 
-function ok<T>(data: T) {
-  return NextResponse.json({ ok: true, data });
-}
-function fail(message: string, status = 400) {
-  return NextResponse.json({ ok: false, error: message }, { status });
-}
-
-// ---------- types ----------
-type TenantId = string;
-type Id = number;
-
-type PaddockRow = {
-  id?: Id;
-  tenant_id: TenantId;
-  name: string;
-  acreage?: number | null;
-  soil_type?: string | null;
-  notes?: string | null;
-  status?: string | null;
-};
-
-// ---------- POST ----------
-export async function POST(req: Request) {
-  const supabase = getSupabaseService();
-
-  let body: any;
+// Safe JSON reader — never throws
+async function readJson(req: Request) {
   try {
-    body = await req.json();
+    return await req.json();
   } catch {
-    return fail("Invalid JSON body");
+    return null;
   }
+}
 
-  const action = body?.action as string;
-  if (!action) return fail("Missing 'action'");
-
+export async function POST(req: Request) {
   try {
+    const body = await readJson(req);
+    if (!body) {
+      return NextResponse.json({ ok: false, error: "Invalid JSON body" }, { status: 400 });
+    }
+
+    const { action } = body as { action?: string };
+    if (!action) {
+      return NextResponse.json({ ok: false, error: "Missing 'action'" }, { status: 400 });
+    }
+
+    const supa = getSupabaseService();
+
     switch (action) {
-      // ---- List paddocks ----
-      case "list": {
-        const { tenant_id } = body as { tenant_id: TenantId };
-        if (!tenant_id) return fail("tenant_id required");
-        const { data, error } = await supabase
-          .from("agriops_paddocks_with_counts") // use view
+      case "listWithCounts": {
+        const { tenant_id } = body as { tenant_id: string };
+        if (!tenant_id) {
+          return NextResponse.json({ ok: false, error: "tenant_id is required" }, { status: 400 });
+        }
+        const { data, error } = await supa
+          .from("agriops_paddocks_with_counts")
           .select("*")
           .eq("tenant_id", tenant_id)
           .order("name");
         if (error) throw error;
-        return ok(data ?? []);
+        return NextResponse.json({ ok: true, data });
       }
 
-      // ---- Upsert paddock ----
       case "upsertPaddock": {
-        const { payload } = body as { payload: PaddockRow };
-        if (!payload?.tenant_id || !payload.name)
-          return fail("payload.tenant_id and payload.name required");
-
-        const { data, error } = await supabase
-          .from("agriops_paddocks")
-          .upsert(
-            {
-              tenant_id: payload.tenant_id,
-              name: payload.name,
-              acreage: payload.acreage ?? null,
-              soil_type: payload.soil_type ?? null,
-              notes: payload.notes ?? null,
-              status: payload.status ?? "active",
-            },
-            { onConflict: "tenant_id,name" }
-          )
-          .select()
-          .limit(1);
-
-        if (error) throw error;
-        return ok(data?.[0] ?? null);
-      }
-
-      // ---- Update paddock ----
-      case "updatePaddock": {
-        const { id, tenant_id, patch } = body as {
-          id: Id;
-          tenant_id: TenantId;
-          patch: Partial<PaddockRow>;
+        const { row } = body as {
+          row: { id?: number; tenant_id: string; name: string; acres?: number | null };
         };
-        if (!id || !tenant_id) return fail("id and tenant_id required");
-
-        const { data, error } = await supabase
+        if (!row?.tenant_id || !row?.name) {
+          return NextResponse.json({ ok: false, error: "tenant_id and name required" }, { status: 400 });
+        }
+        const { data, error } = await supa
           .from("agriops_paddocks")
-          .update({
-            name: patch.name ?? undefined,
-            acreage: patch.acreage ?? null,
-            soil_type: patch.soil_type ?? null,
-            notes: patch.notes ?? null,
-            status: patch.status ?? null,
-          })
-          .eq("id", id)
-          .eq("tenant_id", tenant_id)
+          .upsert(row as any)
           .select()
-          .limit(1);
-
+          .maybeSingle();
         if (error) throw error;
-        return ok(data?.[0] ?? null);
+        return NextResponse.json({ ok: true, data });
       }
 
-      // ---- Delete paddock ----
       case "deletePaddock": {
-        const { id, tenant_id } = body as { id: Id; tenant_id: TenantId };
-        if (!id || !tenant_id) return fail("id and tenant_id required");
-
-        const { error } = await supabase
+        const { id, tenant_id } = body as { id: number; tenant_id: string };
+        const { error } = await supa
           .from("agriops_paddocks")
           .delete()
-          .eq("id", id)
-          .eq("tenant_id", tenant_id);
+          .eq("tenant_id", tenant_id)
+          .eq("id", id);
         if (error) throw error;
-        return ok({ deleted: true });
+        return NextResponse.json({ ok: true, data: { deleted: id } });
       }
 
-      // ---- Bulk import paddocks ----
-      case "bulkUpsert": {
-        const { rows } = body as { rows: PaddockRow[] };
-        if (!Array.isArray(rows) || rows.length === 0) return fail("rows[] required");
-
-        const cleaned = rows.map((r) => ({
-          tenant_id: r.tenant_id,
-          name: r.name,
-          acreage: r.acreage ?? null,
-          soil_type: r.soil_type ?? null,
-          notes: r.notes ?? null,
-          status: r.status ?? "active",
-        }));
-
-        const { data, error } = await supabase
-          .from("agriops_paddocks")
-          .upsert(cleaned, { onConflict: "tenant_id,name" })
-          .select();
-
+      case "listSeeding": {
+        const { tenant_id, paddock_id } = body as { tenant_id: string; paddock_id: number };
+        const { data, error } = await supa
+          .from("agriops_paddock_seeding")
+          .select("*")
+          .eq("tenant_id", tenant_id)
+          .eq("paddock_id", paddock_id)
+          .order("id");
         if (error) throw error;
-        return ok({ imported: data?.length ?? cleaned.length });
+        return NextResponse.json({ ok: true, data });
+      }
+
+      case "upsertSeeding": {
+        const { tenant_id, row } = body as {
+          tenant_id: string;
+          row: { paddock_id: number; seed_mix_name: string; species: string; rate_lb_ac?: number | null; notes?: string | null };
+        };
+        const payload = { ...row, tenant_id };
+        const { data, error } = await supa
+          .from("agriops_paddock_seeding")
+          .upsert(payload as any)
+          .select()
+          .maybeSingle();
+        if (error) throw error;
+        return NextResponse.json({ ok: true, data });
+      }
+
+      case "deleteSeeding": {
+        const { tenant_id, id } = body as { tenant_id: string; id: number };
+        const { error } = await supa
+          .from("agriops_paddock_seeding")
+          .delete()
+          .eq("tenant_id", tenant_id)
+          .eq("id", id);
+        if (error) throw error;
+        return NextResponse.json({ ok: true, data: { deleted: id } });
+      }
+
+      case "listAmendments": {
+        const { tenant_id, paddock_id } = body as { tenant_id: string; paddock_id: number };
+        const { data, error } = await supa
+          .from("agriops_paddock_amendments")
+          .select("*")
+          .eq("tenant_id", tenant_id)
+          .eq("paddock_id", paddock_id)
+          .order("id");
+        if (error) throw error;
+        return NextResponse.json({ ok: true, data });
+      }
+
+      case "upsertAmendment": {
+        const { tenant_id, row } = body as {
+          tenant_id: string;
+          row: { paddock_id: number; product: string; rate_unit_ac: string; notes?: string | null };
+        };
+        const payload = { ...row, tenant_id };
+        const { data, error } = await supa
+          .from("agriops_paddock_amendments")
+          .upsert(payload as any)
+          .select()
+          .maybeSingle();
+        if (error) throw error;
+        return NextResponse.json({ ok: true, data });
+      }
+
+      case "deleteAmendment": {
+        const { tenant_id, id } = body as { tenant_id: string; id: number };
+        const { error } = await supa
+          .from("agriops_paddock_amendments")
+          .delete()
+          .eq("tenant_id", tenant_id)
+          .eq("id", id);
+        if (error) throw error;
+        return NextResponse.json({ ok: true, data: { deleted: id } });
       }
 
       default:
-        return fail(`Unknown action: ${action}`, 404);
+        return NextResponse.json({ ok: false, error: `Unknown action: ${action}` }, { status: 400 });
     }
   } catch (err: any) {
-    console.error("API /api/paddocks error:", err);
-    const msg = err?.message || "Server error";
-    return fail(msg, 500);
+    // Always return JSON on unexpected failures
+    console.error("[/api/paddocks] error", err);
+    return NextResponse.json(
+      { ok: false, error: err?.message || "Server error" },
+      { status: 500 }
+    );
   }
 }

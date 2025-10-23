@@ -6,6 +6,10 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 
+// ...
+const channels: RealtimeChannel[] = [];
+
+
 
 /* ───────────────────────── Supabase (browser) ───────────────────────── */
 const SUPA_URL = process.env.NEXT_PUBLIC_SUPABASE_URL || "";
@@ -78,16 +82,30 @@ export default function PastureMaintenancePage() {
   });
 
   /* ───────────────────── Helpers (API) ───────────────────── */
-  async function api<T = any>(action: string, body: any): Promise<T> {
-    const res = await fetch("/api/paddocks", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ action, ...body }),
-    });
-    const json = await res.json();
-    if (!res.ok || !json.ok) throw new Error(json.error || "Request failed");
-    return json.data as T;
+  // Generic POST helper to your API
+async function api<T = unknown>(action: string, body: any): Promise<T> {
+  const res = await fetch("/api/paddocks", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ action, ...body }),
+  });
+
+  // Be defensive about responses that aren’t valid JSON (prevents “Unexpected end of JSON input”)
+  const raw = await res.text();
+  let json: any = null;
+  try {
+    json = raw ? JSON.parse(raw) : null;
+  } catch {
+    throw new Error(`Bad JSON from /api/paddocks: ${raw?.slice(0, 200) || "<empty>"}`);
   }
+
+  if (!res.ok || !json?.ok) {
+    throw new Error(json?.error || `HTTP ${res.status}`);
+  }
+  return json.data as T;
+}
+
+
 
   async function loadPaddocks() {
     if (!tenantId) return;
