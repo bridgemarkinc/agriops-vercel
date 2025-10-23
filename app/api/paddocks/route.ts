@@ -3,13 +3,16 @@ import { createClient } from "@supabase/supabase-js";
 
 export const dynamic = "force-dynamic";
 
+/** Server-side Supabase with SERVICE ROLE (never expose in client). */
 function getSupabaseService() {
   const url = process.env.NEXT_PUBLIC_SUPABASE_URL!;
   const service = process.env.SUPABASE_SERVICE_ROLE!;
   if (!url || !service) {
     throw new Error("Missing env: NEXT_PUBLIC_SUPABASE_URL and/or SUPABASE_SERVICE_ROLE");
   }
-  return createClient(url, service, { auth: { persistSession: false, autoRefreshToken: false } });
+  return createClient(url, service, {
+    auth: { persistSession: false, autoRefreshToken: false },
+  });
 }
 
 // Safe JSON reader — never throws
@@ -19,6 +22,10 @@ async function readJson(req: Request) {
   } catch {
     return null;
   }
+}
+
+export async function OPTIONS() {
+  return NextResponse.json({ ok: true });
 }
 
 export async function POST(req: Request) {
@@ -51,15 +58,23 @@ export async function POST(req: Request) {
       }
 
       case "upsertPaddock": {
-        const { row } = body as {
-          row: { id?: number; tenant_id: string; name: string; acres?: number | null };
+        // 🔧 Make tenant_id consistent with your other upserts: merged server-side, not required inside `row`.
+        const { tenant_id, row } = body as {
+          tenant_id: string;
+          row: { id?: number; name: string; acres?: number | null };
         };
-        if (!row?.tenant_id || !row?.name) {
-          return NextResponse.json({ ok: false, error: "tenant_id and name required" }, { status: 400 });
+
+        if (!tenant_id || !row?.name) {
+          return NextResponse.json(
+            { ok: false, error: "tenant_id and row.name are required" },
+            { status: 400 }
+          );
         }
+
+        const payload = { ...row, tenant_id }; // <-- merge tenant here
         const { data, error } = await supa
           .from("agriops_paddocks")
-          .upsert(row as any)
+          .upsert(payload as any)
           .select()
           .maybeSingle();
         if (error) throw error;
@@ -68,6 +83,12 @@ export async function POST(req: Request) {
 
       case "deletePaddock": {
         const { id, tenant_id } = body as { id: number; tenant_id: string };
+        if (!id || !tenant_id) {
+          return NextResponse.json(
+            { ok: false, error: "id and tenant_id are required" },
+            { status: 400 }
+          );
+        }
         const { error } = await supa
           .from("agriops_paddocks")
           .delete()
@@ -92,8 +113,21 @@ export async function POST(req: Request) {
       case "upsertSeeding": {
         const { tenant_id, row } = body as {
           tenant_id: string;
-          row: { paddock_id: number; seed_mix_name: string; species: string; rate_lb_ac?: number | null; notes?: string | null };
+          row: {
+            id?: number;
+            paddock_id: number;
+            seed_mix_name: string;
+            species: string;
+            rate_lb_ac?: number | null;
+            notes?: string | null;
+          };
         };
+        if (!tenant_id || !row?.paddock_id || !row?.seed_mix_name) {
+          return NextResponse.json(
+            { ok: false, error: "tenant_id, paddock_id and seed_mix_name are required" },
+            { status: 400 }
+          );
+        }
         const payload = { ...row, tenant_id };
         const { data, error } = await supa
           .from("agriops_paddock_seeding")
@@ -106,6 +140,12 @@ export async function POST(req: Request) {
 
       case "deleteSeeding": {
         const { tenant_id, id } = body as { tenant_id: string; id: number };
+        if (!tenant_id || !id) {
+          return NextResponse.json(
+            { ok: false, error: "tenant_id and id are required" },
+            { status: 400 }
+          );
+        }
         const { error } = await supa
           .from("agriops_paddock_seeding")
           .delete()
@@ -130,8 +170,14 @@ export async function POST(req: Request) {
       case "upsertAmendment": {
         const { tenant_id, row } = body as {
           tenant_id: string;
-          row: { paddock_id: number; product: string; rate_unit_ac: string; notes?: string | null };
+          row: { id?: number; paddock_id: number; product: string; rate_unit_ac: string; notes?: string | null };
         };
+        if (!tenant_id || !row?.paddock_id || !row?.product) {
+          return NextResponse.json(
+            { ok: false, error: "tenant_id, paddock_id and product are required" },
+            { status: 400 }
+          );
+        }
         const payload = { ...row, tenant_id };
         const { data, error } = await supa
           .from("agriops_paddock_amendments")
@@ -144,6 +190,12 @@ export async function POST(req: Request) {
 
       case "deleteAmendment": {
         const { tenant_id, id } = body as { tenant_id: string; id: number };
+        if (!tenant_id || !id) {
+          return NextResponse.json(
+            { ok: false, error: "tenant_id and id are required" },
+            { status: 400 }
+          );
+        }
         const { error } = await supa
           .from("agriops_paddock_amendments")
           .delete()
@@ -157,7 +209,6 @@ export async function POST(req: Request) {
         return NextResponse.json({ ok: false, error: `Unknown action: ${action}` }, { status: 400 });
     }
   } catch (err: any) {
-    // Always return JSON on unexpected failures
     console.error("[/api/paddocks] error", err);
     return NextResponse.json(
       { ok: false, error: err?.message || "Server error" },
