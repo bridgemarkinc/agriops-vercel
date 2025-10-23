@@ -6,16 +6,12 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 
-// ...
-const channels: RealtimeChannel[] = [];
-
-
-
 /* ───────────────────────── Supabase (browser) ───────────────────────── */
 const SUPA_URL = process.env.NEXT_PUBLIC_SUPABASE_URL || "";
 const SUPA_ANON = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || "";
+
 let supabase: SupabaseClient | null = null;
-if (typeof window !== "undefined" && SUPA_URL.startsWith("http")) {
+if (typeof window !== "undefined" && SUPA_URL && SUPA_ANON) {
   supabase = createClient(SUPA_URL, SUPA_ANON, {
     realtime: { params: { eventsPerSecond: 5 } },
   });
@@ -49,12 +45,12 @@ type AmendmentRow = {
 
 /* ───────────────────────── Component ───────────────────────── */
 export default function PastureMaintenancePage() {
-  // You already keep tenantId in your header/context; read it from there if you prefer.
-  const [tenantId, setTenantId] = useState<string>(
-    typeof window !== "undefined"
-      ? (process.env.NEXT_PUBLIC_TENANT || window.location.hostname || "demo")
-      : (process.env.NEXT_PUBLIC_TENANT || "demo")
-  );
+  // Default tenant: prefer NEXT_PUBLIC_TENANT at build, fall back to hostname at runtime, else "demo"
+  const [tenantId, setTenantId] = useState<string>(() => {
+    if (process.env.NEXT_PUBLIC_TENANT) return process.env.NEXT_PUBLIC_TENANT;
+    if (typeof window !== "undefined" && window.location?.hostname) return window.location.hostname;
+    return "demo";
+  });
 
   const [loading, setLoading] = useState(false);
   const [paddocks, setPaddocks] = useState<Paddock[]>([]);
@@ -82,30 +78,27 @@ export default function PastureMaintenancePage() {
   });
 
   /* ───────────────────── Helpers (API) ───────────────────── */
-  // Generic POST helper to your API
-async function api<T = unknown>(action: string, body: any): Promise<T> {
-  const res = await fetch("/api/paddocks", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ action, ...body }),
-  });
+  async function api<T = unknown>(action: string, body: any): Promise<T> {
+    const res = await fetch("/api/paddocks", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ action, ...body }),
+    });
 
-  // Be defensive about responses that aren’t valid JSON (prevents “Unexpected end of JSON input”)
-  const raw = await res.text();
-  let json: any = null;
-  try {
-    json = raw ? JSON.parse(raw) : null;
-  } catch {
-    throw new Error(`Bad JSON from /api/paddocks: ${raw?.slice(0, 200) || "<empty>"}`);
+    // Defensive parsing so we never see "Unexpected end of JSON input"
+    const raw = await res.text();
+    let json: any = null;
+    try {
+      json = raw ? JSON.parse(raw) : null;
+    } catch {
+      throw new Error(`Bad JSON from /api/paddocks: ${raw?.slice(0, 200) || "<empty>"}`);
+    }
+
+    if (!res.ok || !json?.ok) {
+      throw new Error(json?.error || `HTTP ${res.status}`);
+    }
+    return json.data as T;
   }
-
-  if (!res.ok || !json?.ok) {
-    throw new Error(json?.error || `HTTP ${res.status}`);
-  }
-  return json.data as T;
-}
-
-
 
   async function loadPaddocks() {
     if (!tenantId) return;
@@ -223,14 +216,7 @@ async function api<T = unknown>(action: string, body: any): Promise<T> {
     }
   }
 
-  /* ───────────────── Realtime wiring ─────────────────
-     We listen to:
-       - agriops_paddocks (insert/update/delete)  → refresh paddock list
-       - agriops_cattle   (insert/update/delete)  → refresh head counts
-       - agriops_paddock_seeding (i/u/d)          → refresh selected paddock seeding
-       - agriops_paddock_amendments (i/u/d)       → refresh selected paddock amendments
-     All are scoped by tenant_id for safety/perf.
-  ---------------------------------------------------------------- */
+  /* ───────────────── Realtime wiring ───────────────── */
   const paddockRefreshTimer = useRef<number | null>(null);
   const detailRefreshTimer = useRef<number | null>(null);
 
@@ -250,68 +236,65 @@ async function api<T = unknown>(action: string, body: any): Promise<T> {
   };
 
   useEffect(() => {
-  if (!supabase || !tenantId) return;
+    if (!supabase || !tenantId) return;
 
-  const channels: RealtimeChannel[] = [];  // <-- add the type
+    const channels: RealtimeChannel[] = [];
 
-  // Paddocks table
-  channels.push(
-    supabase
-      .channel(`paddocks-${tenantId}`)
-      .on(
-        "postgres_changes",
-        { event: "*", schema: "public", table: "agriops_paddocks", filter: `tenant_id=eq.${tenantId}` },
-        debouncedPaddockRefresh
-      )
-      .subscribe()
-  );
+    channels.push(
+      supabase
+        .channel(`paddocks-${tenantId}`)
+        .on(
+          "postgres_changes",
+          { event: "*", schema: "public", table: "agriops_paddocks", filter: `tenant_id=eq.${tenantId}` },
+          debouncedPaddockRefresh
+        )
+        .subscribe()
+    );
 
-  // Cattle (affects head counts)
-  channels.push(
-    supabase
-      .channel(`cattle-${tenantId}`)
-      .on(
-        "postgres_changes",
-        { event: "*", schema: "public", table: "agriops_cattle", filter: `tenant_id=eq.${tenantId}` },
-        debouncedPaddockRefresh
-      )
-      .subscribe()
-  );
+    channels.push(
+      supabase
+        .channel(`cattle-${tenantId}`)
+        .on(
+          "postgres_changes",
+          { event: "*", schema: "public", table: "agriops_cattle", filter: `tenant_id=eq.${tenantId}` },
+          debouncedPaddockRefresh
+        )
+        .subscribe()
+    );
 
-  // Seeding rows
-  channels.push(
-    supabase
-      .channel(`seed-${tenantId}`)
-      .on(
-        "postgres_changes",
-        { event: "*", schema: "public", table: "agriops_paddock_seeding", filter: `tenant_id=eq.${tenantId}` },
-        debouncedDetailRefresh
-      )
-      .subscribe()
-  );
+    channels.push(
+      supabase
+        .channel(`seed-${tenantId}`)
+        .on(
+          "postgres_changes",
+          { event: "*", schema: "public", table: "agriops_paddock_seeding", filter: `tenant_id=eq.${tenantId}` },
+          debouncedDetailRefresh
+        )
+        .subscribe()
+    );
 
-  // Amendments rows
-  channels.push(
-    supabase
-      .channel(`amend-${tenantId}`)
-      .on(
-        "postgres_changes",
-        { event: "*", schema: "public", table: "agriops_paddock_amendments", filter: `tenant_id=eq.${tenantId}` },
-        debouncedDetailRefresh
-      )
-      .subscribe()
-  );
+    channels.push(
+      supabase
+        .channel(`amend-${tenantId}`)
+        .on(
+          "postgres_changes",
+          { event: "*", schema: "public", table: "agriops_paddock_amendments", filter: `tenant_id=eq.${tenantId}` },
+          debouncedDetailRefresh
+        )
+        .subscribe()
+    );
 
-  return () => {
-    channels.forEach((ch) => {
-      try { supabase.removeChannel(ch); } catch {}
-    });
-    if (paddockRefreshTimer.current) window.clearTimeout(paddockRefreshTimer.current);
-    if (detailRefreshTimer.current) window.clearTimeout(detailRefreshTimer.current);
-  };
-// eslint-disable-next-line react-hooks/exhaustive-deps
-}, [tenantId, selected?.id]);
-
+    return () => {
+      channels.forEach((ch) => {
+        try {
+          supabase?.removeChannel(ch);
+        } catch {}
+      });
+      if (paddockRefreshTimer.current) window.clearTimeout(paddockRefreshTimer.current);
+      if (detailRefreshTimer.current) window.clearTimeout(detailRefreshTimer.current);
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [tenantId, selected?.id]);
 
   /* ───────────────── Effects ───────────────── */
   useEffect(() => {
@@ -326,9 +309,18 @@ async function api<T = unknown>(action: string, body: any): Promise<T> {
     return paddocks.filter((p) => p.name.toLowerCase().includes(q));
   }, [paddocks, filter]);
 
+  const envMissing = !SUPA_URL || !SUPA_ANON;
+
   /* ───────────────── Render ───────────────── */
   return (
     <div className="min-h-screen bg-slate-50">
+      {envMissing && (
+        <div className="bg-amber-100 text-amber-900 px-4 py-2 text-sm">
+          Supabase client is not configured. Set <code>NEXT_PUBLIC_SUPABASE_URL</code> and{" "}
+          <code>NEXT_PUBLIC_SUPABASE_ANON_KEY</code> in your environment and redeploy.
+        </div>
+      )}
+
       <div className="max-w-6xl mx-auto px-4 py-6 space-y-6">
         {/* Page header */}
         <header className="flex items-center justify-between gap-3">
@@ -369,7 +361,9 @@ async function api<T = unknown>(action: string, body: any): Promise<T> {
               />
             </div>
             <div className="flex items-end">
-              <Button onClick={createPaddock}>Save Paddock</Button>
+              <Button onClick={createPaddock} disabled={!tenantId}>
+                Save Paddock
+              </Button>
             </div>
           </div>
         </div>
