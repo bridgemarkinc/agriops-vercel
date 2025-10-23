@@ -1,14 +1,28 @@
 // app/api/cattle/route.ts
 import { NextResponse } from "next/server";
-import { createClient } from "@supabase/supabase-js";
+import { createClient, SupabaseClient } from "@supabase/supabase-js";
 
-export const runtime = "nodejs";
+export function getSupabaseService(): SupabaseClient {
+  // Prefer server-only vars, fallback to NEXT_PUBLIC_* if needed (dev convenience)
+  const url =
+    process.env.SUPABASE_URL ||
+    process.env.NEXT_PUBLIC_SUPABASE_URL ||
+    "";
+  const serviceKey = process.env.SUPABASE_SERVICE_ROLE || "";
 
-function supa() {
-  const url = process.env.NEXT_PUBLIC_SUPABASE_URL;
-  const key = process.env.SUPABASE_SERVICE_ROLE_KEY;
-  if (!url || !key) throw new Error("Supabase env vars missing");
-  return createClient(url, key, { auth: { persistSession: false } });
+  if (!url || !serviceKey) {
+    // Don't print the real keys
+    throw new Error(
+      `Missing env: ${
+        !url ? "[SUPABASE_URL|NEXT_PUBLIC_SUPABASE_URL]" : ""
+      } ${!serviceKey ? "[SUPABASE_SERVICE_ROLE]" : ""}`.trim()
+    );
+  }
+
+  return createClient(url, serviceKey, {
+    auth: { persistSession: false, autoRefreshToken: false },
+  });
+
 }
 
 function ok(data: any, status = 200) {
@@ -24,7 +38,7 @@ export async function POST(req: Request) {
     const { action } = body as { action?: string };
     if (!action) return err("Missing action");
 
-    const db = supa();
+    const supabase = getSupabaseService();
 
     switch (action) {
       /* ───────────────
@@ -34,7 +48,7 @@ export async function POST(req: Request) {
         const { tenant_id } = body as { tenant_id?: string };
         if (!tenant_id) return err("tenant_id required");
 
-        const { data, error } = await db
+        const { data, error } = await supabase
           .from("agriops_cattle")
           .select("*")
           .eq("tenant_id", tenant_id)
@@ -77,8 +91,8 @@ export async function POST(req: Request) {
         };
 
         const query = row.id
-          ? db.from("agriops_cattle").update(payload).eq("id", row.id).select().maybeSingle()
-          : db.from("agriops_cattle").insert([payload]).select().maybeSingle();
+          ? supabase.from("agriops_cattle").update(payload).eq("id", row.id).select().maybeSingle()
+          : supabase.from("agriops_cattle").insert([payload]).select().maybeSingle();
 
         const { data, error } = await query;
         if (error) throw error;
@@ -92,7 +106,7 @@ export async function POST(req: Request) {
         const { tenant_id, id } = body as { tenant_id?: string; id?: number };
         if (!tenant_id || !id) return err("tenant_id and id required");
 
-        const { error } = await db
+        const { error } = await supabase
           .from("agriops_cattle")
           .delete()
           .eq("tenant_id", tenant_id)
@@ -113,7 +127,7 @@ export async function POST(req: Request) {
         if (!tenant_id || !paddock_name)
           return err("tenant_id and paddock_name required");
 
-        const { data, error } = await db
+        const { data, error } = await supabase
           .from("agriops_cattle")
           .select("*")
           .eq("tenant_id", tenant_id)
@@ -134,7 +148,7 @@ export async function POST(req: Request) {
         };
         if (!tenant_id || !ids?.length) return err("tenant_id and ids[] required");
 
-        const { error } = await db
+        const { error } = await supabase
           .from("agriops_cattle")
           .update({ current_paddock: new_paddock || null })
           .eq("tenant_id", tenant_id)
