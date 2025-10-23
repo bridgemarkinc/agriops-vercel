@@ -3,19 +3,34 @@ import { NextResponse } from "next/server";
 import { createClient } from "@supabase/supabase-js";
 
 export const dynamic = "force-dynamic";
+export const runtime = "nodejs"; // <-- make sure we are on Node, not Edge
 
-/** Build a server-side Supabase client with the SERVICE ROLE key.
- *  Never expose this in the browser.
- *  We accept SUPABASE_URL or NEXT_PUBLIC_SUPABASE_URL for convenience.
- */
 function getSupabaseService() {
+  // Accept common variants so a name mismatch doesn't break prod
   const url =
-    process.env.SUPABASE_URL || process.env.NEXT_PUBLIC_SUPABASE_URL || "";
-  const service = process.env.SUPABASE_SERVICE_ROLE || "";
-  if (!url || !service) return null; // <-- don't throw; let the handler respond with JSON
-  return createClient(url, service, {
+    process.env.SUPABASE_URL ||
+    process.env.NEXT_PUBLIC_SUPABASE_URL ||
+    "";
+
+  const service =
+    process.env.SUPABASE_SERVICE_ROLE ||
+    process.env.SUPABASE_SERVICE_ROLE_KEY || // many dashboards label it this way
+    "";
+
+  if (!url || !service) {
+    return {
+      client: null as any,
+      missing: {
+        SUPABASE_URL_or_NEXT_PUBLIC_SUPABASE_URL: !!url,
+        SUPABASE_SERVICE_ROLE_or_KEY: !!service,
+      },
+    };
+  }
+
+  const client = createClient(url, service, {
     auth: { persistSession: false, autoRefreshToken: false },
   });
+  return { client, missing: null as null };
 }
 
 // Safe JSON reader — never throws
@@ -32,13 +47,15 @@ export async function OPTIONS() {
 }
 
 export async function POST(req: Request) {
-  const supa = getSupabaseService();
+  const { client: supa, missing } = getSupabaseService();
   if (!supa) {
     return NextResponse.json(
       {
         ok: false,
         error:
-          "Missing env vars. Set SUPABASE_URL (or NEXT_PUBLIC_SUPABASE_URL) and SUPABASE_SERVICE_ROLE on the server.",
+          "Missing env vars on server. Set SUPABASE_URL (or NEXT_PUBLIC_SUPABASE_URL) AND SUPABASE_SERVICE_ROLE (or SUPABASE_SERVICE_ROLE_KEY).",
+        // Diagnostics (booleans only; no secrets)
+        diagnostics: missing,
       },
       { status: 500 }
     );
