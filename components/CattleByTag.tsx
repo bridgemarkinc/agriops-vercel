@@ -16,6 +16,7 @@ const SUPABASE = {
 let supabase: SupabaseClient | null = null;
 if (typeof window !== "undefined" && SUPABASE.url.startsWith("http")) {
   supabase = createClient(SUPABASE.url, SUPABASE.anon);
+  
 }
 
 /* ───────────────── Types ───────────────── */
@@ -145,16 +146,27 @@ export default function CattleByTag({ tenantId }: { tenantId: string }) {
   });
 
   /* helpers */
+
+  function sb(): SupabaseClient {
+  if (!supabase) throw new Error("Supabase not configured");
+  return supabase as SupabaseClient;
+}
+
   async function api(action: string, body: any) {
-    const res = await fetch("/api/cattle", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ action, ...body }),
-    });
-    const json = await res.json();
-    if (!res.ok || !json.ok) throw new Error(json.error || "Request failed");
-    return json.data;
+  const res = await fetch("/api/cattle", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ action, ...body }),
+  });
+  const raw = await res.text();
+  let json: any = null;
+  try { json = raw ? JSON.parse(raw) : null; } catch { /* noop */ }
+  if (!res.ok || !json?.ok) {
+    throw new Error(json?.error || `HTTP ${res.status}: ${raw?.slice(0,140)}`);
   }
+  return json.data;
+}
+
 
   /* loaders */
   async function loadAnimals() {
@@ -323,76 +335,119 @@ export default function CattleByTag({ tenantId }: { tenantId: string }) {
   }
 
   /* photos: upload with file-by-file progress */
-  async function uploadPhotos(files: FileList) {
-    try {
-      if (!supabase || !editing?.id) return;
-      setUploading(true);
-      setUploadTotals({ done: 0, total: files.length });
-      setUploadProgress(0);
+  /* photos: upload with file-by-file progress */
 
-      const list = Array.from(files);
-      for (let i = 0; i < list.length; i++) {
-        const file = list[i];
+async function uploadPhotos(files: FileList) {
+  if (!editing?.id) return;        // keep your existing guard
+  const client = sb();  
+  setUploading(true);
+  setUploadTotals({ done: 0, total: files.length });
+  setUploadProgress(0);
 
-        const safeTag = (editing.tag || `id-${editing.id}`).replace(/[^a-z0-9_-]/gi, "_");
-        const ext = (file.name.split(".").pop() || "jpg").toLowerCase();
-        const path = `${tenantId}/${safeTag}/${Date.now()}_${Math.random().toString(36).slice(2)}.${ext}`;
+  const list = Array.from(files);
 
-        const { error: upErr } = await supabase.storage.from("cattle-photos").upload(path, file, { upsert: true });
-        if (upErr) throw upErr;
+  for (let i = 0; i < list.length; i++) {
+    const file = list[i];
+    
 
-        const { data: pub } = supabase.storage.from("cattle-photos").getPublicUrl(path);
-        const photo_url = pub?.publicUrl;
+    const safeTag = (editing.tag || `id-${editing.id}`).replace(/[^a-z0-9_-]/gi, "_");
+    const ext = (file.name.split(".").pop() || "jpg").toLowerCase();
+    const path = `${tenantId}/${safeTag}/${Date.now()}_${Math.random()
+      .toString(36)
+      .slice(2)}.${ext}`;
+      
 
-        await api("addAnimalPhoto", {
-          tenant_id: tenantId,
-          animal_id: editing.id,
-          tag: editing.tag,
-          photo_url,
-          photo_path: path,
-          set_primary: photos.length === 0 && i === 0,
-        });
-
-        const done = i + 1;
-        const total = list.length;
-        setUploadTotals({ done, total });
-        setUploadProgress(Math.round((done / total) * 100));
-      }
-
-      await loadPhotos(editing.id);
-      await loadAnimals();
-    } catch (e: any) {
-      console.error(e);
-      alert(`Upload failed: ${e.message || e}`);
-    } finally {
-      setUploading(false);
-      setTimeout(() => {
-        setUploadProgress(0);
-        setUploadTotals({ done: 0, total: 0 });
-      }, 800);
+    // 1) Upload to Storage
+    const up = await sb().storage.from("cattle-photos").upload(path, file, { upsert: true });
+    if (up.error) {
+      console.error("storage.upload error:", up.error);
+      alert(`Upload failed: ${up.error.message}`);
+      break; // stop the loop on first failure
     }
+
+    // 2) Get a public URL (requires bucket to allow public read)
+    const { data: pub } = sb().storage.from("cattle-photos").getPublicUrl(path);
+    const photo_url = pub?.publicUrl;
+    if (!photo_url) {
+      // (If your bucket is private, switch to createSignedUrl here.)
+      alert("Upload ok, but no public URL; check bucket public-read setting.");
+      break;
+    }
+
+    // 3) Insert DB row via service-role API
+    try {
+      await api("addAnimalPhoto", {
+        tenant_id: tenantId,
+        animal_id: editing.id,
+        tag: editing.tag,
+        photo_url,
+        photo_path: path,
+        set_primary: photos.length === 0 && i === 0,
+      });
+    } catch (e: any) {
+      console.error("DB insert failed; rolling back file:", e);
+      // Optional cleanup: try to remove the file if DB insert fails
+      await sb().storage.from("cattle-photos").remove([path]).catch(() => {});
+      alert(`Upload failed: ${e.message || e}`);
+      break;
+    }
+
+    const done = i + 1;
+    const total = list.length;
+    setUploadTotals({ done, total });
+    setUploadProgress(Math.round((done / total) * 100));
   }
 
-  async function setPrimaryPhoto(id: number, url: string) {
-    if (!editing?.id) return;
+  setUploading(false);
+  setTimeout(() => {
+    setUploadProgress(0);
+    setUploadTotals({ done: 0, total: 0 });
+  }, 800);
+
+  if (editing?.id) {
+    await loadPhotos(editing.id);
+    await loadAnimals();
+  }
+}
+
+async function setPrimaryPhoto(id: number, url: string) {
+  if (!editing?.id) return;
+  try {
     await api("setPrimaryPhoto", { tenant_id: tenantId, animal_id: editing.id, id });
     await loadPhotos(editing.id);
     await loadAnimals();
-    setEditing((prev) => (prev ? { ...prev, primary_photo_url: url } : prev));
+    setEditing(prev => (prev ? { ...prev, primary_photo_url: url } : prev));
+  } catch (e: any) {
+    alert(e.message || "Failed to set primary photo");
   }
+}
 
-  async function deletePhoto(p: PhotoRow) {
-    if (!editing?.id) return;
-    if (!confirm("Delete this photo?")) return;
+async function deletePhoto(p: PhotoRow) {
+  if (!editing?.id) return;
+  if (!confirm("Delete this photo?")) return;
+
+  try {
+    // 1) Delete DB row (service-role)
     await api("deleteAnimalPhoto", {
       tenant_id: tenantId,
       animal_id: editing.id,
       id: p.id,
       photo_path: p.photo_path,
     });
+
+    // 2) (Optional) delete the file from storage
+    // Works only if your bucket policy allows removes from the browser.
+    // If not, you can add a small server route to remove with service role instead.
+
+    await sb().storage.from("cattle-photos").remove([p.photo_path]).catch(() => {});
+
     await loadPhotos(editing.id);
     await loadAnimals();
+  } catch (e: any) {
+    alert(e.message || "Failed to delete photo");
   }
+}
+
 
   // drag to reorder gallery
   function handleDragStart(idx: number) {
