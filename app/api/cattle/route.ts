@@ -2,16 +2,24 @@ import { NextResponse } from "next/server";
 import { createClient } from "@supabase/supabase-js";
 
 export const dynamic = "force-dynamic";
-export const runtime = "nodejs"; // IMPORTANT: ensure Node runtime (Edge can miss server envs)
+export const runtime = "nodejs"; // keep Node (Edge won't see server-only envs)
 
-/** Create Supabase with SERVICE ROLE (bypasses RLS) */
+/** Create Supabase with SERVICE ROLE (server-only; bypasses RLS) */
 function getSupabaseService() {
-  const url = process.env.NEXT_PUBLIC_SUPABASE_URL!;
-  const service = process.env.SUPABASE_SERVICE_ROLE!;
-  if (!url || !service) {
-    // Keep the message loud—if you see this in logs, the envs aren’t available on the server
-    throw new Error("Missing env: NEXT_PUBLIC_SUPABASE_URL and/or SUPABASE_SERVICE_ROLE");
+  // ✅ Prefer server var; fall back to public for compatibility
+  const url =
+    process.env.SUPABASE_URL ||
+    process.env.NEXT_PUBLIC_SUPABASE_URL ||
+    "";
+  const service = process.env.SUPABASE_SERVICE_ROLE || "";
+
+  if (!url) {
+    throw new Error("Missing env: SUPABASE_URL (or NEXT_PUBLIC_SUPABASE_URL)");
   }
+  if (!service) {
+    throw new Error("Missing env: SUPABASE_SERVICE_ROLE");
+  }
+
   return createClient(url, service, {
     auth: { persistSession: false, autoRefreshToken: false },
   });
@@ -19,16 +27,15 @@ function getSupabaseService() {
 
 // Safe JSON body
 async function readJson(req: Request) {
-  try {
-    return await req.json();
-  } catch {
-    return null;
-  }
+  try { return await req.json(); } catch { return null; }
 }
 
 export async function OPTIONS() {
   return NextResponse.json({ ok: true });
 }
+
+// … keep the rest of your POST handler the same …
+
 
 export async function POST(req: Request) {
   const supa = getSupabaseService(); // <- one service-role client for all actions
