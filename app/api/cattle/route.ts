@@ -1,41 +1,28 @@
-// app/api/cattle/route.ts
 import { NextResponse } from "next/server";
 import { createClient } from "@supabase/supabase-js";
 
 export const dynamic = "force-dynamic";
-export const runtime = "nodejs"; // ensure Node runtime (stable env + service key access)
+export const runtime = "nodejs"; // IMPORTANT: ensure Node runtime (Edge can miss server envs)
 
-/** Service-role client (bypasses RLS). Never expose in client. */
+/** Create Supabase with SERVICE ROLE (bypasses RLS) */
 function getSupabaseService() {
   const url = process.env.NEXT_PUBLIC_SUPABASE_URL!;
   const service = process.env.SUPABASE_SERVICE_ROLE!;
   if (!url || !service) {
+    // Keep the message loud—if you see this in logs, the envs aren’t available on the server
     throw new Error("Missing env: NEXT_PUBLIC_SUPABASE_URL and/or SUPABASE_SERVICE_ROLE");
   }
-  return createClient(url, service, { auth: { persistSession: false, autoRefreshToken: false } });
+  return createClient(url, service, {
+    auth: { persistSession: false, autoRefreshToken: false },
+  });
 }
 
-// Never throws
+// Safe JSON body
 async function readJson(req: Request) {
-  try { return await req.json(); } catch { return null; }
-}
-
-// Add a GET /health check for quick testing in the browser
-export async function GET() {
   try {
-    const supa = getSupabaseService();
-    // Lightweight ping: head count on a tiny select; if this throws, env/conn is broken
-    const { error } = await supa
-      .from("agriops_cattle")
-      .select("id", { head: true, count: "exact" })
-      .limit(1);
-    if (error) throw error;
-    return NextResponse.json({ ok: true, service: "cattle-api", status: "healthy" });
-  } catch (err: any) {
-    return NextResponse.json(
-      { ok: false, error: err?.message || "health check failed" },
-      { status: 500 }
-    );
+    return await req.json();
+  } catch {
+    return null;
   }
 }
 
@@ -43,309 +30,366 @@ export async function OPTIONS() {
   return NextResponse.json({ ok: true });
 }
 
-type ActionBody = Record<string, any>;
-
-// Helper to format PostgREST errors in responses
-function errJson(e: any, status = 500) {
-  const payload = {
-    ok: false,
-    error: e?.message || "Server error",
-    code: e?.code || undefined,
-    details: e?.details || undefined,
-    hint: e?.hint || undefined,
-  };
-  return NextResponse.json(payload, { status });
-}
-
 export async function POST(req: Request) {
-  const supa = getSupabaseService();
-
+  const supa = getSupabaseService(); // <- one service-role client for all actions
   try {
-    const body = (await readJson(req)) as ActionBody | null;
-    if (!body) return NextResponse.json({ ok: false, error: "Invalid JSON body" }, { status: 400 });
-
-    const { action } = body as { action?: string };
-    if (!action) return NextResponse.json({ ok: false, error: "Missing 'action'" }, { status: 400 });
-
-    /* ───────────── Diagnostics ───────────── */
-    if (action === "diagEcho") {
-      return NextResponse.json({ ok: true, data: { you_sent: body } });
+    const body = await readJson(req);
+    if (!body) {
+      return NextResponse.json({ ok: false, error: "Invalid JSON body" }, { status: 400 });
     }
 
-    if (action === "diagListTables") {
-      // quickly verify every table we depend on exists/works
-      const tables = [
-        "agriops_cattle",
-        "agriops_cattle_weights",
-        "agriops_cattle_treatments",
-        "agriops_cattle_processing",
-        "agriops_animal_photos",
-      ];
-      const results: Record<string, { ok: boolean; error?: string }> = {};
-      for (const t of tables) {
-        const { error } = await supa.from(t).select("id", { head: true, count: "exact" }).limit(1);
-        results[t] = error ? { ok: false, error: error.message } : { ok: true };
+    const action = String(body.action || "");
+    if (!action) {
+      return NextResponse.json({ ok: false, error: "Missing 'action'" }, { status: 400 });
+    }
+
+    switch (action) {
+      /** ─────────────────── Animals ─────────────────── */
+
+      // Create new animal
+      case "upsertAnimal": {
+        const p = body.payload ?? {};
+        if (!p?.tenant_id || !p?.tag) {
+          return NextResponse.json(
+            { ok: false, error: "payload.tenant_id and payload.tag are required" },
+            { status: 400 }
+          );
+        }
+
+        const { data, error } = await supa
+          .from("agriops_cattle")
+          .upsert(
+            {
+              tenant_id: p.tenant_id,
+              tag: String(p.tag).trim(),
+              name: p.name ?? null,
+              sex: p.sex ?? null,
+              breed: p.breed ?? null,
+              birth_date: p.birth_date ?? null,
+              current_paddock: p.current_paddock ?? null,
+              status: p.status ?? "active",
+            } as any
+          )
+          .select()
+          .maybeSingle();
+
+        if (error) throw error;
+        return NextResponse.json({ ok: true, data });
       }
-      return NextResponse.json({ ok: true, data: results });
-    }
 
-    /* ───────────── Reads ───────────── */
-    if (action === "listAnimals") {
-      const { tenant_id, search } = body as { tenant_id: string; search?: string | null };
-      if (!tenant_id) return NextResponse.json({ ok: false, error: "tenant_id required" }, { status: 400 });
-
-      let q = supa.from("agriops_cattle").select("*").eq("tenant_id", tenant_id).order("tag");
-      if (search) q = q.ilike("tag", `%${search}%`);
-      const { data, error } = await q;
-      if (error) return errJson(error);
-      return NextResponse.json({ ok: true, data });
-    }
-
-    if (action === "listWeights") {
-      const { tenant_id, animal_id } = body as { tenant_id: string; animal_id: number };
-      const { data, error } = await supa
-        .from("agriops_cattle_weights")
-        .select("*")
-        .eq("tenant_id", tenant_id)
-        .eq("animal_id", animal_id)
-        .order("weigh_date", { ascending: false });
-      if (error) return errJson(error);
-      return NextResponse.json({ ok: true, data });
-    }
-
-    if (action === "listTreatments") {
-      const { tenant_id, animal_id } = body as { tenant_id: string; animal_id: number };
-      const { data, error } = await supa
-        .from("agriops_cattle_treatments")
-        .select("*")
-        .eq("tenant_id", tenant_id)
-        .eq("animal_id", animal_id)
-        .order("treat_date", { ascending: false });
-      if (error) return errJson(error);
-      return NextResponse.json({ ok: true, data });
-    }
-
-    if (action === "listProcessing") {
-      const { tenant_id, animal_id } = body as { tenant_id: string; animal_id: number };
-      const { data, error } = await supa
-        .from("agriops_cattle_processing")
-        .select("*")
-        .eq("tenant_id", tenant_id)
-        .eq("animal_id", animal_id)
-        .order("sent_date", { ascending: false });
-      if (error) return errJson(error);
-      return NextResponse.json({ ok: true, data });
-    }
-
-    if (action === "listAnimalPhotos") {
-      const { tenant_id, animal_id } = body as { tenant_id: string; animal_id: number };
-      const { data, error } = await supa
-        .from("agriops_animal_photos")
-        .select("*")
-        .eq("tenant_id", tenant_id)
-        .eq("animal_id", animal_id)
-        .order("sort_order", { ascending: true })
-        .order("id", { ascending: true });
-      if (error) return errJson(error);
-      return NextResponse.json({ ok: true, data });
-    }
-
-    /* ───────────── Mutations ───────────── */
-    if (action === "upsertAnimal") {
-      const { payload } = body as { payload: { tenant_id: string; tag: string } & Record<string, any> };
-      if (!payload?.tenant_id || !payload?.tag) {
-        return NextResponse.json({ ok: false, error: "tenant_id and tag required" }, { status: 400 });
+      // Update existing animal (by id)
+      case "updateAnimal": {
+        const id = Number(body?.id);
+        const tenant_id = String(body?.tenant_id || "");
+        const patch = body?.patch ?? {};
+        if (!id || !tenant_id) {
+          return NextResponse.json(
+            { ok: false, error: "id and tenant_id are required" },
+            { status: 400 }
+          );
+        }
+        const { error } = await supa
+          .from("agriops_cattle")
+          .update({
+            name: patch.name ?? null,
+            sex: patch.sex ?? null,
+            breed: patch.breed ?? null,
+            birth_date: patch.birth_date ?? null,
+            current_paddock: patch.current_paddock ?? null,
+            status: patch.status ?? null,
+          })
+          .eq("tenant_id", tenant_id)
+          .eq("id", id);
+        if (error) throw error;
+        return NextResponse.json({ ok: true, data: { updated: id } });
       }
-      const { data, error } = await supa
-        .from("agriops_cattle")
-        .upsert(payload as any)
-        .select()
-        .maybeSingle();
-      if (error) return errJson(error);
-      return NextResponse.json({ ok: true, data });
-    }
 
-    if (action === "updateAnimal") {
-      const { id, tenant_id, patch } = body as { id: number; tenant_id: string; patch: Record<string, any> };
-      const { data, error } = await supa
-        .from("agriops_cattle")
-        .update(patch)
-        .eq("tenant_id", tenant_id)
-        .eq("id", id)
-        .select()
-        .maybeSingle();
-      if (error) return errJson(error);
-      return NextResponse.json({ ok: true, data });
-    }
+      /** ───────────────── Weights & Treatments ───────────── */
 
-    if (action === "addWeight") {
-      const { tenant_id, animal_id, weigh_date, weight_lb, notes } = body as {
-        tenant_id: string; animal_id: number; weigh_date: string; weight_lb: number; notes?: string | null;
-      };
-      const row = { tenant_id, animal_id, weigh_date, weight_lb, notes: notes ?? null };
-      const { data, error } = await supa.from("agriops_cattle_weights").insert(row as any).select();
-      if (error) return errJson(error);
-      return NextResponse.json({ ok: true, data });
-    }
+      case "addWeight": {
+        const tenant_id = String(body?.tenant_id || "");
+        const animal_id = Number(body?.animal_id);
+        const weigh_date = String(body?.weigh_date || "");
+        const weight_lb = Number(body?.weight_lb || 0);
+        const notes = body?.notes ?? null;
+        if (!tenant_id || !animal_id || !weigh_date || !weight_lb) {
+          return NextResponse.json(
+            { ok: false, error: "tenant_id, animal_id, weigh_date, weight_lb are required" },
+            { status: 400 }
+          );
+        }
+        const { error } = await supa
+          .from("agriops_cattle_weights")
+          .insert({ tenant_id, animal_id, weigh_date, weight_lb, notes });
+        if (error) throw error;
+        return NextResponse.json({ ok: true, data: { inserted: true } });
+      }
 
-    if (action === "addTreatment") {
-      const { tenant_id, animal_id, treat_date, product, dose, notes } = body as {
-        tenant_id: string; animal_id: number; treat_date: string; product?: string | null; dose?: string | null; notes?: string | null;
-      };
-      const row = { tenant_id, animal_id, treat_date, product: product ?? null, dose: dose ?? null, notes: notes ?? null };
-      const { data, error } = await supa.from("agriops_cattle_treatments").insert(row as any).select();
-      if (error) return errJson(error);
-      return NextResponse.json({ ok: true, data });
-    }
+      case "addTreatment": {
+        const tenant_id = String(body?.tenant_id || "");
+        const animal_id = Number(body?.animal_id);
+        const treat_date = String(body?.treat_date || "");
+        const product = body?.product ?? null;
+        const dose = body?.dose ?? null;
+        const notes = body?.notes ?? null;
+        if (!tenant_id || !animal_id || !treat_date) {
+          return NextResponse.json(
+            { ok: false, error: "tenant_id, animal_id, treat_date are required" },
+            { status: 400 }
+          );
+        }
+        const { error } = await supa
+          .from("agriops_cattle_treatments")
+          .insert({ tenant_id, animal_id, treat_date, product, dose, notes });
+        if (error) throw error;
+        return NextResponse.json({ ok: true, data: { inserted: true } });
+      }
 
-    if (action === "sendToProcessing") {
-      const { tenant_id, animal_id, tag, sent_date, processor, transport_id, live_weight_lb, notes } = body as any;
-      const row = {
-        tenant_id, animal_id, tag, status: "scheduled",
-        sent_date, processor: processor ?? null, transport_id: transport_id ?? null,
-        live_weight_lb: live_weight_lb ?? null, notes: notes ?? null,
-      };
-      const { data, error } = await supa.from("agriops_cattle_processing").insert(row as any).select();
-      if (error) return errJson(error);
-      return NextResponse.json({ ok: true, data });
-    }
+      /** ───────────────── Processing (examples) ──────────── */
 
-    if (action === "updateProcessing") {
-      const { id, tenant_id, patch } = body as { id: number; tenant_id: string; patch: Record<string, any> };
-      const { data, error } = await supa
-        .from("agriops_cattle_processing")
-        .update(patch)
-        .eq("tenant_id", tenant_id)
-        .eq("id", id)
-        .select()
-        .maybeSingle();
-      if (error) return errJson(error);
-      return NextResponse.json({ ok: true, data });
-    }
+      case "listProcessing": {
+        const tenant_id = String(body?.tenant_id || "");
+        const animal_id = Number(body?.animal_id);
+        if (!tenant_id || !animal_id) {
+          return NextResponse.json(
+            { ok: false, error: "tenant_id and animal_id are required" },
+            { status: 400 }
+          );
+        }
+        const { data, error } = await supa
+          .from("agriops_processing")
+          .select("*")
+          .eq("tenant_id", tenant_id)
+          .eq("animal_id", animal_id)
+          .order("sent_date", { ascending: false });
+        if (error) throw error;
+        return NextResponse.json({ ok: true, data });
+      }
 
-    /* ───────────── Photos ───────────── */
-    if (action === "addAnimalPhoto") {
-      const { tenant_id, animal_id, tag, photo_url, photo_path, set_primary } = body as {
-        tenant_id: string; animal_id: number; tag: string; photo_url: string; photo_path: string; set_primary?: boolean;
-      };
+      case "sendToProcessing": {
+        const tenant_id = String(body?.tenant_id || "");
+        const animal_id = Number(body?.animal_id);
+        const tag = String(body?.tag || "");
+        const sent_date = String(body?.sent_date || "");
+        const processor = body?.processor ?? null;
+        const transport_id = body?.transport_id ?? null;
+        const live_weight_lb = body?.live_weight_lb ?? null;
+        const notes = body?.notes ?? null;
+        if (!tenant_id || !animal_id || !tag || !sent_date) {
+          return NextResponse.json(
+            { ok: false, error: "tenant_id, animal_id, tag, sent_date are required" },
+            { status: 400 }
+          );
+        }
+        const { error } = await supa
+          .from("agriops_processing")
+          .insert({
+            tenant_id,
+            animal_id,
+            tag,
+            status: "scheduled",
+            sent_date,
+            processor,
+            transport_id,
+            live_weight_lb,
+            notes,
+          });
+        if (error) throw error;
+        return NextResponse.json({ ok: true, data: { inserted: true } });
+      }
 
-      const { data: inserted, error } = await supa
-        .from("agriops_animal_photos")
-        .insert({
-          tenant_id, animal_id, tag,
-          photo_url, photo_path,
-          is_primary: false,
-        } as any)
-        .select()
-        .maybeSingle();
-      if (error) return errJson(error);
+      case "updateProcessing": {
+        const id = Number(body?.id);
+        const tenant_id = String(body?.tenant_id || "");
+        const patch = body?.patch ?? {};
+        if (!tenant_id || !id) {
+          return NextResponse.json(
+            { ok: false, error: "tenant_id and id are required" },
+            { status: 400 }
+          );
+        }
+        const { error } = await supa
+          .from("agriops_processing")
+          .update({
+            status: patch.status ?? undefined,
+            processor: patch.processor ?? undefined,
+            live_weight_lb: patch.live_weight_lb ?? undefined,
+            hot_carcass_weight_lb: patch.hot_carcass_weight_lb ?? undefined,
+            carcass_weight_lb: patch.carcass_weight_lb ?? undefined,
+            grade: patch.grade ?? undefined,
+            yield_pct: patch.yield_pct ?? undefined,
+            lot_code: patch.lot_code ?? undefined,
+            cut_sheet_url: patch.cut_sheet_url ?? undefined,
+            invoice_url: patch.invoice_url ?? undefined,
+            notes: patch.notes ?? undefined,
+          })
+          .eq("tenant_id", tenant_id)
+          .eq("id", id);
+        if (error) throw error;
+        return NextResponse.json({ ok: true, data: { updated: id } });
+      }
 
-      if (set_primary && inserted?.id) {
-        const up1 = await supa.from("agriops_cattle")
-          .update({ primary_photo_url: inserted.photo_url })
-          .eq("tenant_id", tenant_id).eq("id", animal_id);
-        if (up1.error) return errJson(up1.error);
+      /** ─────────────── Photos (DB rows) ─────────────── */
 
-        const clr = await supa.from("agriops_animal_photos")
+      case "addAnimalPhoto": {
+        const tenant_id = String(body?.tenant_id || "");
+        const animal_id = Number(body?.animal_id);
+        const tag = String(body?.tag || "");
+        const photo_url = String(body?.photo_url || "");
+        const photo_path = String(body?.photo_path || "");
+        const set_primary = !!body?.set_primary;
+
+        if (!tenant_id || !animal_id || !tag || !photo_url || !photo_path) {
+          return NextResponse.json(
+            { ok: false, error: "tenant_id, animal_id, tag, photo_url, photo_path are required" },
+            { status: 400 }
+          );
+        }
+
+        // Verify the animal belongs to this tenant (helps catch bad tenant_id)
+        const { data: animal, error: aerr } = await supa
+          .from("agriops_cattle")
+          .select("id")
+          .eq("tenant_id", tenant_id)
+          .eq("id", animal_id)
+          .maybeSingle();
+        if (aerr) throw aerr;
+        if (!animal) {
+          return NextResponse.json({ ok: false, error: "Animal not found for tenant" }, { status: 400 });
+        }
+
+        const { data: row, error } = await supa
+          .from("agriops_cattle_photos")
+          .insert({ tenant_id, animal_id, tag, photo_url, photo_path, is_primary: false })
+          .select()
+          .maybeSingle();
+        if (error) throw error;
+
+        if (set_primary && row?.id) {
+          await supa
+            .from("agriops_cattle_photos")
+            .update({ is_primary: false })
+            .eq("tenant_id", tenant_id)
+            .eq("animal_id", animal_id);
+          await supa
+            .from("agriops_cattle_photos")
+            .update({ is_primary: true })
+            .eq("tenant_id", tenant_id)
+            .eq("id", row.id);
+          await supa
+            .from("agriops_cattle")
+            .update({ primary_photo_url: photo_url })
+            .eq("tenant_id", tenant_id)
+            .eq("id", animal_id);
+        }
+
+        return NextResponse.json({ ok: true, data: row });
+      }
+
+      case "setPrimaryPhoto": {
+        const tenant_id = String(body?.tenant_id || "");
+        const animal_id = Number(body?.animal_id);
+        const id = Number(body?.id);
+        if (!tenant_id || !animal_id || !id) {
+          return NextResponse.json(
+            { ok: false, error: "tenant_id, animal_id, id are required" },
+            { status: 400 }
+          );
+        }
+        // Get URL
+        const { data: photo, error: perr } = await supa
+          .from("agriops_cattle_photos")
+          .select("photo_url")
+          .eq("tenant_id", tenant_id)
+          .eq("id", id)
+          .maybeSingle();
+        if (perr) throw perr;
+        if (!photo?.photo_url) {
+          return NextResponse.json({ ok: false, error: "Photo not found" }, { status: 404 });
+        }
+        await supa
+          .from("agriops_cattle_photos")
           .update({ is_primary: false })
           .eq("tenant_id", tenant_id)
           .eq("animal_id", animal_id);
-        if (clr.error) return errJson(clr.error);
-
-        const sp = await supa.from("agriops_animal_photos")
+        await supa
+          .from("agriops_cattle_photos")
           .update({ is_primary: true })
           .eq("tenant_id", tenant_id)
-          .eq("id", inserted.id);
-        if (sp.error) return errJson(sp.error);
+          .eq("id", id);
+        await supa
+          .from("agriops_cattle")
+          .update({ primary_photo_url: photo.photo_url })
+          .eq("tenant_id", tenant_id)
+          .eq("id", animal_id);
+        return NextResponse.json({ ok: true, data: { primary_id: id } });
       }
-      return NextResponse.json({ ok: true, data: inserted });
-    }
 
-    if (action === "setPrimaryPhoto") {
-      const { tenant_id, animal_id, id } = body as { tenant_id: string; animal_id: number; id: number };
-      const { data: photo, error: e1 } = await supa
-        .from("agriops_animal_photos")
-        .select("*").eq("tenant_id", tenant_id).eq("id", id).maybeSingle();
-      if (e1) return errJson(e1);
-      if (!photo) return NextResponse.json({ ok: false, error: "Photo not found" }, { status: 404 });
-
-      const up1 = await supa.from("agriops_cattle")
-        .update({ primary_photo_url: photo.photo_url })
-        .eq("tenant_id", tenant_id).eq("id", animal_id);
-      if (up1.error) return errJson(up1.error);
-
-      const clr = await supa.from("agriops_animal_photos")
-        .update({ is_primary: false })
-        .eq("tenant_id", tenant_id)
-        .eq("animal_id", animal_id);
-      if (clr.error) return errJson(clr.error);
-
-      const sp = await supa.from("agriops_animal_photos")
-        .update({ is_primary: true })
-        .eq("tenant_id", tenant_id)
-        .eq("id", id);
-      if (sp.error) return errJson(sp.error);
-
-      return NextResponse.json({ ok: true, data: { id } });
-    }
-
-    if (action === "deleteAnimalPhoto") {
-      const { tenant_id, animal_id, id } = body as { tenant_id: string; animal_id: number; id: number };
-      const del = await supa
-        .from("agriops_animal_photos")
-        .delete()
-        .eq("tenant_id", tenant_id)
-        .eq("animal_id", animal_id)
-        .eq("id", id);
-      if (del.error) return errJson(del.error);
-
-      const { data: remaining } = await supa
-        .from("agriops_animal_photos")
-        .select("*")
-        .eq("tenant_id", tenant_id)
-        .eq("animal_id", animal_id)
-        .order("is_primary", { ascending: false })
-        .limit(1);
-      const nextUrl = remaining?.[0]?.photo_url ?? null;
-
-      const up1 = await supa.from("agriops_cattle")
-        .update({ primary_photo_url: nextUrl })
-        .eq("tenant_id", tenant_id).eq("id", animal_id);
-      if (up1.error) return errJson(up1.error);
-
-      return NextResponse.json({ ok: true, data: { deleted: id } });
-    }
-
-    if (action === "reorderAnimalPhotos") {
-      const { tenant_id, animal_id, ordered_ids } = body as { tenant_id: string; animal_id: number; ordered_ids: number[] };
-      if (!Array.isArray(ordered_ids)) {
-        return NextResponse.json({ ok: false, error: "ordered_ids must be an array" }, { status: 400 });
-      }
-      for (let i = 0; i < ordered_ids.length; i++) {
-        const up = await supa.from("agriops_animal_photos")
-          .update({ sort_order: i })
+      case "deleteAnimalPhoto": {
+        const tenant_id = String(body?.tenant_id || "");
+        const animal_id = Number(body?.animal_id);
+        const id = Number(body?.id);
+        // photo_path is optional here; you can also delete from storage client-side
+        if (!tenant_id || !animal_id || !id) {
+          return NextResponse.json(
+            { ok: false, error: "tenant_id, animal_id, id are required" },
+            { status: 400 }
+          );
+        }
+        const { error } = await supa
+          .from("agriops_cattle_photos")
+          .delete()
           .eq("tenant_id", tenant_id)
           .eq("animal_id", animal_id)
-          .eq("id", ordered_ids[i]);
-        if (up.error) return errJson(up.error);
+          .eq("id", id);
+        if (error) throw error;
+        return NextResponse.json({ ok: true, data: { deleted: id } });
       }
-      return NextResponse.json({ ok: true, data: { reordered: ordered_ids.length } });
-    }
 
-    /* ───────────── Bulk import ───────────── */
-    if (action === "bulkUpsertAnimals") {
-      const { rows } = body as { rows: any[] };
-      if (!Array.isArray(rows) || rows.length === 0) {
-        return NextResponse.json({ ok: false, error: "rows required" }, { status: 400 });
+      // Optional: reorder
+      case "reorderAnimalPhotos": {
+        const tenant_id = String(body?.tenant_id || "");
+        const animal_id = Number(body?.animal_id);
+        const ordered_ids: number[] = Array.isArray(body?.ordered_ids) ? body.ordered_ids : [];
+        if (!tenant_id || !animal_id || !ordered_ids.length) {
+          return NextResponse.json(
+            { ok: false, error: "tenant_id, animal_id, ordered_ids[] are required" },
+            { status: 400 }
+          );
+        }
+        // Store sort_order (optional table column)
+        for (let i = 0; i < ordered_ids.length; i++) {
+          await supa
+            .from("agriops_cattle_photos")
+            .update({ sort_order: i })
+            .eq("tenant_id", tenant_id)
+            .eq("animal_id", animal_id)
+            .eq("id", ordered_ids[i]);
+        }
+        return NextResponse.json({ ok: true, data: { reordered: ordered_ids.length } });
       }
-      const { data, error } = await supa.from("agriops_cattle").upsert(rows as any);
-      if (error) return errJson(error);
-      return NextResponse.json({ ok: true, data: { imported: rows.length } });
-    }
 
-    return NextResponse.json({ ok: false, error: `Unknown action: ${action}` }, { status: 400 });
+      /** ─────────────── Bulk import ─────────────── */
+
+      case "bulkUpsertAnimals": {
+        const rows: any[] = Array.isArray(body?.rows) ? body.rows : [];
+        if (!rows.length) {
+          return NextResponse.json({ ok: false, error: "rows[] required" }, { status: 400 });
+        }
+        const { error } = await supa.from("agriops_cattle").upsert(rows as any[]);
+        if (error) throw error;
+        return NextResponse.json({ ok: true, data: { imported: rows.length } });
+      }
+
+      default:
+        return NextResponse.json({ ok: false, error: `Unknown action: ${action}` }, { status: 400 });
+    }
   } catch (err: any) {
-    console.error("[/api/cattle] fatal error", err);
-    return errJson(err);
+    // Log full error server-side; client gets clean text
+    console.error("[/api/cattle] error:", err);
+    return NextResponse.json(
+      { ok: false, error: err?.message || "Server error" },
+      { status: 500 }
+    );
   }
 }
