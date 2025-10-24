@@ -1,23 +1,11 @@
 "use client";
 
 import React, { useEffect, useMemo, useRef, useState } from "react";
-import { createClient, SupabaseClient } from "@supabase/supabase-js";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import jsPDF from "jspdf";
-
-/* ───────────────── Supabase (browser) ───────────────── */
-const SUPABASE = {
-  url: process.env.NEXT_PUBLIC_SUPABASE_URL || "",
-  anon: process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || "",
-};
-let supabase: SupabaseClient | null = null;
-if (typeof window !== "undefined" && SUPABASE.url.startsWith("http")) {
-  supabase = createClient(SUPABASE.url, SUPABASE.anon);
-  
-}
 
 /* ───────────────── Types ───────────────── */
 type Animal = {
@@ -84,6 +72,58 @@ type PhotoRow = {
   sort_order?: number;
 };
 
+type SignedUpload = {
+  uploadUrl: string;
+  path: string;
+  publicUrl: string;
+  method?: "PUT" | "POST";
+  headers?: Record<string, string>;
+};
+
+/* ───────────────── Small utils ───────────────── */
+function assert(ok: any, msg: string): asserts ok {
+  if (!ok) throw new Error(msg);
+}
+
+async function api<T = unknown>(action: string, body?: any): Promise<T> {
+  const res = await fetch("/api/cattle", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ action, ...(body || {}) }),
+  });
+  const raw = await res.text();
+  let json: any = null;
+  try {
+    json = raw ? JSON.parse(raw) : null;
+  } catch {
+    throw new Error(`Bad JSON from /api/cattle: ${raw?.slice(0, 200) || "<empty>"}`);
+  }
+  if (!res.ok || !json?.ok) {
+    throw new Error(json?.error || `HTTP ${res.status}: ${raw?.slice(0, 200)}`);
+  }
+  return json.data as T;
+}
+
+async function putFileToUrl(
+  file: File,
+  signed: SignedUpload
+): Promise<void> {
+  const method = signed.method || "PUT";
+  const headers = signed.headers || {};
+  if (!headers["Content-Type"]) {
+    headers["Content-Type"] = file.type || "application/octet-stream";
+  }
+  const resp = await fetch(signed.uploadUrl, {
+    method,
+    headers,
+    body: file,
+  });
+  if (!resp.ok) {
+    const txt = await resp.text().catch(() => "");
+    throw new Error(`Upload PUT failed: ${resp.status} ${resp.statusText} ${txt}`);
+  }
+}
+
 /* ───────────────── Component ───────────────── */
 export default function CattleByTag({ tenantId }: { tenantId: string }) {
   // list/search
@@ -145,75 +185,58 @@ export default function CattleByTag({ tenantId }: { tenantId: string }) {
     notes: "",
   });
 
-  /* helpers */
-
-  function sb(): SupabaseClient {
-  if (!supabase) throw new Error("Supabase not configured");
-  return supabase as SupabaseClient;
-}
-
-  async function api(action: string, body: any) {
-  const res = await fetch("/api/cattle", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ action, ...body }),
-  });
-  const raw = await res.text();
-  let json: any = null;
-  try { json = raw ? JSON.parse(raw) : null; } catch { /* noop */ }
-  if (!res.ok || !json?.ok) {
-    throw new Error(json?.error || `HTTP ${res.status}: ${raw?.slice(0,140)}`);
-  }
-  return json.data;
-}
-
-
-  /* loaders */
+  /* loaders — ALL via /api/cattle */
   async function loadAnimals() {
-  setLoading(true);
-  try {
-    const data = await api("listAnimals", { tenant_id: tenantId, search: search.trim() || null });
-    setAnimals((data || []) as Animal[]);
-  } catch (e: any) {
-    alert(e.message || "Failed to load animals");
-  } finally {
-    setLoading(false);
+    setLoading(true);
+    try {
+      const data = await api<Animal[]>("listAnimals", {
+        tenant_id: tenantId,
+        search: (search || "").trim() || null,
+      });
+      setAnimals(data || []);
+    } catch (e: any) {
+      alert(e.message || "Failed to load animals");
+    } finally {
+      setLoading(false);
+    }
   }
-}
 
-  // Detail
-async function loadDetail(animalId: number) {
-  try {
-    const [ws, ts] = await Promise.all([
-      api("listWeights", { tenant_id: tenantId, animal_id: animalId }),
-      api("listTreatments", { tenant_id: tenantId, animal_id: animalId }),
-    ]);
-    setWeights(ws || []);
-    setTreats(ts || []);
-  } catch (e: any) {
-    alert(e.message || "Failed to load detail");
+  async function loadDetail(animalId: number) {
+    try {
+      const [ws, ts] = await Promise.all([
+        api<Weight[]>("listWeights", { tenant_id: tenantId, animal_id: animalId }),
+        api<Treatment[]>("listTreatments", { tenant_id: tenantId, animal_id: animalId }),
+      ]);
+      setWeights(ws || []);
+      setTreats(ts || []);
+    } catch (e: any) {
+      alert(e.message || "Failed to load animal details");
+    }
   }
-}
 
-  // Processing
-async function loadProcessing(animalId: number) {
-  try {
-    const data = await api("listProcessing", { tenant_id: tenantId, animal_id: animalId });
-    setProcessing((data || []) as Processing[]);
-  } catch (e: any) {
-    alert(e.message || "Failed to load processing");
+  async function loadProcessing(animalId: number) {
+    try {
+      const data = await api<Processing[]>("listProcessing", {
+        tenant_id: tenantId,
+        animal_id: animalId,
+      });
+      setProcessing(data || []);
+    } catch (e: any) {
+      alert(e.message || "Failed to load processing");
+    }
   }
-}
 
-  // Photos
-async function loadPhotos(animalId: number) {
-  try {
-    const data = await api("listAnimalPhotos", { tenant_id: tenantId, animal_id: animalId });
-    setPhotos((data || []) as PhotoRow[]);
-  } catch (e: any) {
-    alert(e.message || "Failed to load photos");
+  async function loadPhotos(animalId: number) {
+    try {
+      const data = await api<PhotoRow[]>("listAnimalPhotos", {
+        tenant_id: tenantId,
+        animal_id: animalId,
+      });
+      setPhotos(data || []);
+    } catch (e: any) {
+      alert(e.message || "Failed to load photos");
+    }
   }
-}
 
   function startEdit(a: Animal) {
     setEditing(a);
@@ -233,48 +256,61 @@ async function loadPhotos(animalId: number) {
     scanRef.current?.focus();
   }, [editing]);
 
-  /* CRUD animals */
+  /* CRUD animals (server-only) */
   async function saveAnimal() {
-    if (!draft.tag.trim()) return alert("Tag is required");
-    const payload = {
-      tenant_id: tenantId,
-      tag: draft.tag.trim(),
-      name: draft.name || null,
-      sex: draft.sex ? (draft.sex.toUpperCase() as "M" | "F") : null,
-      breed: draft.breed || null,
-      birth_date: draft.birth_date || null,
-      current_paddock: draft.current_paddock || null,
-      status: draft.status || null,
-    };
-    await api("upsertAnimal", { payload });
-    setDraft({
-      tenant_id: tenantId,
-      tag: "",
-      name: "",
-      sex: undefined,
-      breed: "",
-      birth_date: "",
-      current_paddock: "",
-      status: "active",
-    });
-    await loadAnimals();
+    const tag = draft.tag.trim();
+    if (!tag) return alert("Tag is required");
+    try {
+      await api("upsertAnimal", {
+        payload: {
+          tenant_id: tenantId,
+          tag,
+          name: draft.name || null,
+          sex: draft.sex ? (draft.sex.toUpperCase() as "M" | "F") : null,
+          breed: draft.breed || null,
+          birth_date: draft.birth_date || null,
+          current_paddock: draft.current_paddock || null,
+          status: draft.status || null,
+        },
+      });
+      setDraft({
+        tenant_id: tenantId,
+        tag: "",
+        name: "",
+        sex: undefined,
+        breed: "",
+        birth_date: "",
+        current_paddock: "",
+        status: "active",
+      });
+      await loadAnimals();
+    } catch (e: any) {
+      alert(e.message || "Failed to save animal");
+    }
   }
 
   async function updateAnimal(a: Animal) {
     if (!a.id) return;
-    const patch = {
-      name: a.name || null,
-      sex: a.sex || null,
-      breed: a.breed || null,
-      birth_date: a.birth_date || null,
-      current_paddock: a.current_paddock || null,
-      status: a.status || null,
-    };
-    await api("updateAnimal", { id: a.id, tenant_id: tenantId, patch });
-    await loadAnimals();
+    try {
+      await api("updateAnimal", {
+        id: a.id,
+        tenant_id: tenantId,
+        patch: {
+          name: a.name || null,
+          sex: a.sex || null,
+          breed: a.breed || null,
+          birth_date: a.birth_date || null,
+          current_paddock: a.current_paddock || null,
+          status: a.status || null,
+        },
+      });
+      await loadAnimals();
+    } catch (e: any) {
+      alert(e.message || "Failed to update animal");
+    }
   }
 
-  /* weights & treatments */
+  /* weights & treatments (server-only) */
   async function addWeight(
     animalId: number,
     weigh_date: string,
@@ -282,14 +318,18 @@ async function loadPhotos(animalId: number) {
     notes?: string
   ) {
     if (!weigh_date || !weight_lb) return alert("Date and weight are required");
-    await api("addWeight", {
-      tenant_id: tenantId,
-      animal_id: animalId,
-      weigh_date,
-      weight_lb,
-      notes,
-    });
-    await loadDetail(animalId);
+    try {
+      await api("addWeight", {
+        tenant_id: tenantId,
+        animal_id: animalId,
+        weigh_date,
+        weight_lb,
+        notes,
+      });
+      await loadDetail(animalId);
+    } catch (e: any) {
+      alert(e.message || "Failed to add weight");
+    }
   }
 
   async function addTreatment(
@@ -300,154 +340,147 @@ async function loadPhotos(animalId: number) {
     notes?: string
   ) {
     if (!treat_date) return alert("Date is required");
-    await api("addTreatment", {
-      tenant_id: tenantId,
-      animal_id: animalId,
-      treat_date,
-      product,
-      dose,
-      notes,
-    });
-    await loadDetail(animalId);
+    try {
+      await api("addTreatment", {
+        tenant_id: tenantId,
+        animal_id: animalId,
+        treat_date,
+        product,
+        dose,
+        notes,
+      });
+      await loadDetail(animalId);
+    } catch (e: any) {
+      alert(e.message || "Failed to add treatment");
+    }
   }
 
-  /* processing */
+  /* processing (server-only) */
   async function sendToProcessing() {
     if (!editing?.id) return;
     if (!procDraft.sent_date) return alert("Sent date is required");
-    await api("sendToProcessing", {
-      tenant_id: tenantId,
-      animal_id: editing.id,
-      tag: editing.tag,
-      sent_date: procDraft.sent_date,
-      processor: procDraft.processor || null,
-      transport_id: procDraft.transport_id || null,
-      live_weight_lb: procDraft.live_weight_lb ? Number(procDraft.live_weight_lb) : null,
-      notes: procDraft.notes || null,
-    });
-    setProcDraft({ sent_date: "", processor: "", transport_id: "", live_weight_lb: undefined, notes: "" });
-    await Promise.all([loadAnimals(), loadProcessing(editing.id)]);
-  }
-
-  async function updateProcessingRow(row: Processing, patch: Partial<Processing>) {
-    await api("updateProcessing", { id: row.id, tenant_id: tenantId, patch });
-    if (editing?.id) await loadProcessing(editing.id);
-  }
-
-  /* photos: upload with file-by-file progress */
-  /* photos: upload with file-by-file progress */
-
-async function uploadPhotos(files: FileList) {
-  if (!editing?.id) return;        // keep your existing guard
-  const client = sb();  
-  setUploading(true);
-  setUploadTotals({ done: 0, total: files.length });
-  setUploadProgress(0);
-
-  const list = Array.from(files);
-
-  for (let i = 0; i < list.length; i++) {
-    const file = list[i];
-    
-
-    const safeTag = (editing.tag || `id-${editing.id}`).replace(/[^a-z0-9_-]/gi, "_");
-    const ext = (file.name.split(".").pop() || "jpg").toLowerCase();
-    const path = `${tenantId}/${safeTag}/${Date.now()}_${Math.random()
-      .toString(36)
-      .slice(2)}.${ext}`;
-      
-
-    // 1) Upload to Storage
-    const up = await sb().storage.from("cattle-photos").upload(path, file, { upsert: true });
-    if (up.error) {
-      console.error("storage.upload error:", up.error);
-      alert(`Upload failed: ${up.error.message}`);
-      break; // stop the loop on first failure
-    }
-
-    // 2) Get a public URL (requires bucket to allow public read)
-    const { data: pub } = sb().storage.from("cattle-photos").getPublicUrl(path);
-    const photo_url = pub?.publicUrl;
-    if (!photo_url) {
-      // (If your bucket is private, switch to createSignedUrl here.)
-      alert("Upload ok, but no public URL; check bucket public-read setting.");
-      break;
-    }
-
-    // 3) Insert DB row via service-role API
     try {
-      await api("addAnimalPhoto", {
+      await api("sendToProcessing", {
         tenant_id: tenantId,
         animal_id: editing.id,
         tag: editing.tag,
-        photo_url,
-        photo_path: path,
-        set_primary: photos.length === 0 && i === 0,
+        sent_date: procDraft.sent_date,
+        processor: procDraft.processor || null,
+        transport_id: procDraft.transport_id || null,
+        live_weight_lb: procDraft.live_weight_lb ? Number(procDraft.live_weight_lb) : null,
+        notes: procDraft.notes || null,
       });
+      setProcDraft({
+        sent_date: "",
+        processor: "",
+        transport_id: "",
+        live_weight_lb: undefined,
+        notes: "",
+      });
+      await Promise.all([loadAnimals(), loadProcessing(editing.id)]);
     } catch (e: any) {
-      console.error("DB insert failed; rolling back file:", e);
-      // Optional cleanup: try to remove the file if DB insert fails
-      await sb().storage.from("cattle-photos").remove([path]).catch(() => {});
-      alert(`Upload failed: ${e.message || e}`);
-      break;
+      alert(e.message || "Failed to send to processing");
+    }
+  }
+
+  async function updateProcessingRow(row: Processing, patch: Partial<Processing>) {
+    try {
+      await api("updateProcessing", { id: row.id, tenant_id: tenantId, patch });
+      if (editing?.id) await loadProcessing(editing.id);
+    } catch (e: any) {
+      alert(e.message || "Failed to update processing");
+    }
+  }
+
+  /* photos: upload via signed URL (server-only flow) */
+  async function uploadPhotos(files: FileList) {
+    if (!editing?.id) return;
+
+    setUploading(true);
+    setUploadTotals({ done: 0, total: files.length });
+    setUploadProgress(0);
+
+    const list = Array.from(files);
+
+    for (let i = 0; i < list.length; i++) {
+      const file = list[i];
+      try {
+        const safeTag = (editing.tag || `id-${editing.id}`).replace(/[^a-z0-9_-]/gi, "_");
+        const ext = (file.name.split(".").pop() || "jpg").toLowerCase();
+
+        // 1) Ask server for a signed upload URL (service role)
+        const signed = await api<SignedUpload>("getSignedUploadUrl", {
+          tenant_id: tenantId,
+          tag: safeTag,
+          file_ext: ext,
+          content_type: file.type || "image/jpeg",
+        });
+        assert(signed && signed.uploadUrl && signed.path && signed.publicUrl, "Bad signed URL response");
+
+        // 2) PUT the file to that URL directly from browser
+        await putFileToUrl(file, signed);
+
+        // 3) Record the photo row in DB (service role insert)
+        await api("addAnimalPhoto", {
+          tenant_id: tenantId,
+          animal_id: editing.id,
+          tag: editing.tag,
+          photo_url: signed.publicUrl,
+          photo_path: signed.path,
+          set_primary: photos.length === 0 && i === 0,
+        });
+      } catch (e: any) {
+        console.error(e);
+        alert(`Upload failed: ${e.message || e}`);
+        break; // stop on first failure
+      }
+
+      const done = i + 1;
+      const total = list.length;
+      setUploadTotals({ done, total });
+      setUploadProgress(Math.round((done / total) * 100));
     }
 
-    const done = i + 1;
-    const total = list.length;
-    setUploadTotals({ done, total });
-    setUploadProgress(Math.round((done / total) * 100));
+    setUploading(false);
+    setTimeout(() => {
+      setUploadProgress(0);
+      setUploadTotals({ done: 0, total: 0 });
+    }, 800);
+
+    if (editing?.id) {
+      await loadPhotos(editing.id);
+      await loadAnimals();
+    }
   }
 
-  setUploading(false);
-  setTimeout(() => {
-    setUploadProgress(0);
-    setUploadTotals({ done: 0, total: 0 });
-  }, 800);
-
-  if (editing?.id) {
-    await loadPhotos(editing.id);
-    await loadAnimals();
+  async function setPrimaryPhoto(id: number, url: string) {
+    if (!editing?.id) return;
+    try {
+      await api("setPrimaryPhoto", { tenant_id: tenantId, animal_id: editing.id, id });
+      await loadPhotos(editing.id);
+      await loadAnimals();
+      setEditing((prev) => (prev ? { ...prev, primary_photo_url: url } : prev));
+    } catch (e: any) {
+      alert(e.message || "Failed to set primary photo");
+    }
   }
-}
 
-async function setPrimaryPhoto(id: number, url: string) {
-  if (!editing?.id) return;
-  try {
-    await api("setPrimaryPhoto", { tenant_id: tenantId, animal_id: editing.id, id });
-    await loadPhotos(editing.id);
-    await loadAnimals();
-    setEditing(prev => (prev ? { ...prev, primary_photo_url: url } : prev));
-  } catch (e: any) {
-    alert(e.message || "Failed to set primary photo");
+  async function deletePhoto(p: PhotoRow) {
+    if (!editing?.id) return;
+    if (!confirm("Delete this photo?")) return;
+    try {
+      await api("deleteAnimalPhoto", {
+        tenant_id: tenantId,
+        animal_id: editing.id,
+        id: p.id,
+        photo_path: p.photo_path,
+      });
+      await loadPhotos(editing.id);
+      await loadAnimals();
+    } catch (e: any) {
+      alert(e.message || "Failed to delete photo");
+    }
   }
-}
-
-async function deletePhoto(p: PhotoRow) {
-  if (!editing?.id) return;
-  if (!confirm("Delete this photo?")) return;
-
-  try {
-    // 1) Delete DB row (service-role)
-    await api("deleteAnimalPhoto", {
-      tenant_id: tenantId,
-      animal_id: editing.id,
-      id: p.id,
-      photo_path: p.photo_path,
-    });
-
-    // 2) (Optional) delete the file from storage
-    // Works only if your bucket policy allows removes from the browser.
-    // If not, you can add a small server route to remove with service role instead.
-
-    await sb().storage.from("cattle-photos").remove([p.photo_path]).catch(() => {});
-
-    await loadPhotos(editing.id);
-    await loadAnimals();
-  } catch (e: any) {
-    alert(e.message || "Failed to delete photo");
-  }
-}
-
 
   // drag to reorder gallery
   function handleDragStart(idx: number) {
@@ -466,15 +499,10 @@ async function deletePhoto(p: PhotoRow) {
 
     const ordered_ids = next.map((p) => p.id);
     try {
-      await fetch("/api/cattle", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          action: "reorderAnimalPhotos",
-          tenant_id: tenantId,
-          animal_id: editing?.id,
-          ordered_ids,
-        }),
+      await api("reorderAnimalPhotos", {
+        tenant_id: tenantId,
+        animal_id: editing?.id,
+        ordered_ids,
       });
     } catch (e) {
       console.error(e);
@@ -482,29 +510,14 @@ async function deletePhoto(p: PhotoRow) {
     }
   }
 
-  // dropzone handlers
-  function onDropZoneDragOver(e: React.DragEvent<HTMLDivElement>) {
-    e.preventDefault();
-    if (!dzActive) setDzActive(true);
-  }
-  function onDropZoneDragLeave() {
-    setDzActive(false);
-  }
-  function onDropZoneDrop(e: React.DragEvent<HTMLDivElement>) {
-    e.preventDefault();
-    setDzActive(false);
-    const files = e.dataTransfer?.files;
-    if (files && files.length) uploadPhotos(files);
-  }
-
-  /* CSV helpers */
+  /* CSV helpers (server bulk import stays the same) */
   function parseCSV(text: string) {
     const lines = text.split(/\r?\n/).filter((l) => l.trim().length > 0);
     if (!lines.length) return { header: [] as string[], rows: [] as string[][] };
     const splitRow = (line: string) =>
-      (line.match(/("([^"]|"")*"|[^,]*)/g) || [])
-        .map((c) => c.replace(/^"|"$/g, "").replace(/""/g, `"`));
-
+      (line.match(/("([^"]|"")*"|[^,]*)/g) || []).map((c) =>
+        c.replace(/^"|"$/g, "").replace(/""/g, `"`)
+      );
     const header = splitRow(lines[0]).map((h) => h.trim());
     const rows = lines.slice(1).map(splitRow);
     return { header, rows };
@@ -521,8 +534,7 @@ async function deletePhoto(p: PhotoRow) {
         setImportMsg("CSV is empty or missing header");
         return;
       }
-      const indexOf = (name: string) =>
-        header.findIndex((h) => h.toLowerCase() === name.toLowerCase());
+      const indexOf = (name: string) => header.findIndex((h) => h.toLowerCase() === name.toLowerCase());
 
       const mapped = rows
         .map((cols) => {
@@ -741,9 +753,16 @@ async function deletePhoto(p: PhotoRow) {
       y += line;
     } else {
       weightsToPrint.forEach((w) => {
-        doc.text(`${formatDate(w.weigh_date)} — ${w.weight_lb} lb${w.notes ? " — " + w.notes : ""}`, marginX, y);
+        doc.text(
+          `${formatDate(w.weigh_date)} — ${w.weight_lb} lb${w.notes ? " — " + w.notes : ""}`,
+          marginX,
+          y
+        );
         y += line;
-        if (y > 720) { doc.addPage(); y = marginY; }
+        if (y > 720) {
+          doc.addPage();
+          y = marginY;
+        }
       });
     }
 
@@ -763,11 +782,17 @@ async function deletePhoto(p: PhotoRow) {
     } else {
       treatsToPrint.forEach((t) => {
         doc.text(
-          `${formatDate(t.treat_date)} — ${t.product || "Unspecified"}${t.dose ? " — " + t.dose : ""}${t.notes ? " — " + t.notes : ""}`,
-          marginX, y
+          `${formatDate(t.treat_date)} — ${t.product || "Unspecified"}${t.dose ? " — " + t.dose : ""}${
+            t.notes ? " — " + t.notes : ""
+          }`,
+          marginX,
+          y
         );
         y += line;
-        if (y > 720) { doc.addPage(); y = marginY; }
+        if (y > 720) {
+          doc.addPage();
+          y = marginY;
+        }
       });
     }
 
@@ -901,7 +926,11 @@ async function deletePhoto(p: PhotoRow) {
                   if (f) importCSV(f);
                 }}
               />
-              <Button variant="outline" onClick={() => fileRef.current?.click()} disabled={importBusy}>
+              <Button
+                variant="outline"
+                onClick={() => fileRef.current?.click()}
+                disabled={importBusy}
+              >
                 {importBusy ? "Importing…" : "Import CSV"}
               </Button>
               {importMsg && (
@@ -1090,14 +1119,24 @@ async function deletePhoto(p: PhotoRow) {
                     ))}
                   </select>
 
-                  <Button size="sm" onClick={exportAnimalPdf}>Export PDF</Button>
+                  <Button size="sm" onClick={exportAnimalPdf}>
+                    Export PDF
+                  </Button>
                 </div>
               </div>
 
               <div
-                onDragOver={onDropZoneDragOver}
-                onDragLeave={onDropZoneDragLeave}
-                onDrop={onDropZoneDrop}
+                onDragOver={(e) => {
+                  e.preventDefault();
+                  if (!dzActive) setDzActive(true);
+                }}
+                onDragLeave={() => setDzActive(false)}
+                onDrop={(e) => {
+                  e.preventDefault();
+                  setDzActive(false);
+                  const files = e.dataTransfer?.files;
+                  if (files && files.length) uploadPhotos(files);
+                }}
                 className={[
                   "mt-3 w-full border-2 border-dashed rounded-xl p-6 text-center transition",
                   dzActive ? "bg-emerald-50 border-emerald-400" : "bg-white/70 border-slate-300",
@@ -1113,10 +1152,7 @@ async function deletePhoto(p: PhotoRow) {
                 {uploading && (
                   <div className="mt-4">
                     <div className="h-2 w-full bg-slate-200 rounded-full overflow-hidden">
-                      <div
-                        className="h-2 bg-emerald-600"
-                        style={{ width: `${uploadProgress}%` }}
-                      />
+                      <div className="h-2 bg-emerald-600" style={{ width: `${uploadProgress}%` }} />
                     </div>
                     <div className="mt-1 text-xs text-slate-600">
                       Uploading {uploadTotals.done}/{uploadTotals.total} ({uploadProgress}%)
@@ -1224,7 +1260,7 @@ async function deletePhoto(p: PhotoRow) {
                   <Label>Transport ID</Label>
                   <Input
                     value={procDraft.transport_id || ""}
-                    onChange={(e) => setProcDraft({ ...procDraft, transport_id: e.target.value })}
+                  onChange={(e) => setProcDraft({ ...procDraft, transport_id: e.target.value })}
                   />
                 </div>
                 <div>
@@ -1336,9 +1372,7 @@ async function deletePhoto(p: PhotoRow) {
                     {treatmentSummary.length ? (
                       <ul className="list-disc ml-4">
                         {treatmentSummary.map((t) => (
-                          <li key={t.product}>
-                            {t.product}: {t.count}
-                          </li>
+                          <li key={t.product}>{t.product}: {t.count}</li>
                         ))}
                       </ul>
                     ) : (
@@ -1466,11 +1500,7 @@ function TreatEditor({
           <Input value={notes} onChange={(e) => setNotes(e.target.value)} />
         </div>
         <div className="md:col-span-5">
-          <Button
-            onClick={() =>
-              onAdd(animalId, date, product || undefined, dose || undefined, notes || undefined)
-            }
-          >
+          <Button onClick={() => onAdd(animalId, date, product || undefined, dose || undefined, notes || undefined)}>
             Add Treatment
           </Button>
         </div>
