@@ -3,8 +3,9 @@ import { NextResponse } from "next/server";
 import { createClient } from "@supabase/supabase-js";
 
 export const dynamic = "force-dynamic";
+export const runtime = "nodejs"; // ensure Node runtime (stable env + service key access)
 
-/** Service-role client (bypasses RLS). Never expose this key to the browser. */
+/** Service-role client (bypasses RLS). Never expose in client. */
 function getSupabaseService() {
   const url = process.env.NEXT_PUBLIC_SUPABASE_URL!;
   const service = process.env.SUPABASE_SERVICE_ROLE!;
@@ -14,8 +15,28 @@ function getSupabaseService() {
   return createClient(url, service, { auth: { persistSession: false, autoRefreshToken: false } });
 }
 
+// Never throws
 async function readJson(req: Request) {
   try { return await req.json(); } catch { return null; }
+}
+
+// Add a GET /health check for quick testing in the browser
+export async function GET() {
+  try {
+    const supa = getSupabaseService();
+    // Lightweight ping: head count on a tiny select; if this throws, env/conn is broken
+    const { error } = await supa
+      .from("agriops_cattle")
+      .select("id", { head: true, count: "exact" })
+      .limit(1);
+    if (error) throw error;
+    return NextResponse.json({ ok: true, service: "cattle-api", status: "healthy" });
+  } catch (err: any) {
+    return NextResponse.json(
+      { ok: false, error: err?.message || "health check failed" },
+      { status: 500 }
+    );
+  }
 }
 
 export async function OPTIONS() {
@@ -23,6 +44,18 @@ export async function OPTIONS() {
 }
 
 type ActionBody = Record<string, any>;
+
+// Helper to format PostgREST errors in responses
+function errJson(e: any, status = 500) {
+  const payload = {
+    ok: false,
+    error: e?.message || "Server error",
+    code: e?.code || undefined,
+    details: e?.details || undefined,
+    hint: e?.hint || undefined,
+  };
+  return NextResponse.json(payload, { status });
+}
 
 export async function POST(req: Request) {
   const supa = getSupabaseService();
@@ -34,7 +67,29 @@ export async function POST(req: Request) {
     const { action } = body as { action?: string };
     if (!action) return NextResponse.json({ ok: false, error: "Missing 'action'" }, { status: 400 });
 
-    /* ----------------------- READ LISTS ----------------------- */
+    /* ───────────── Diagnostics ───────────── */
+    if (action === "diagEcho") {
+      return NextResponse.json({ ok: true, data: { you_sent: body } });
+    }
+
+    if (action === "diagListTables") {
+      // quickly verify every table we depend on exists/works
+      const tables = [
+        "agriops_cattle",
+        "agriops_cattle_weights",
+        "agriops_cattle_treatments",
+        "agriops_cattle_processing",
+        "agriops_animal_photos",
+      ];
+      const results: Record<string, { ok: boolean; error?: string }> = {};
+      for (const t of tables) {
+        const { error } = await supa.from(t).select("id", { head: true, count: "exact" }).limit(1);
+        results[t] = error ? { ok: false, error: error.message } : { ok: true };
+      }
+      return NextResponse.json({ ok: true, data: results });
+    }
+
+    /* ───────────── Reads ───────────── */
     if (action === "listAnimals") {
       const { tenant_id, search } = body as { tenant_id: string; search?: string | null };
       if (!tenant_id) return NextResponse.json({ ok: false, error: "tenant_id required" }, { status: 400 });
@@ -42,7 +97,7 @@ export async function POST(req: Request) {
       let q = supa.from("agriops_cattle").select("*").eq("tenant_id", tenant_id).order("tag");
       if (search) q = q.ilike("tag", `%${search}%`);
       const { data, error } = await q;
-      if (error) throw error;
+      if (error) return errJson(error);
       return NextResponse.json({ ok: true, data });
     }
 
@@ -54,7 +109,7 @@ export async function POST(req: Request) {
         .eq("tenant_id", tenant_id)
         .eq("animal_id", animal_id)
         .order("weigh_date", { ascending: false });
-      if (error) throw error;
+      if (error) return errJson(error);
       return NextResponse.json({ ok: true, data });
     }
 
@@ -66,7 +121,7 @@ export async function POST(req: Request) {
         .eq("tenant_id", tenant_id)
         .eq("animal_id", animal_id)
         .order("treat_date", { ascending: false });
-      if (error) throw error;
+      if (error) return errJson(error);
       return NextResponse.json({ ok: true, data });
     }
 
@@ -78,7 +133,7 @@ export async function POST(req: Request) {
         .eq("tenant_id", tenant_id)
         .eq("animal_id", animal_id)
         .order("sent_date", { ascending: false });
-      if (error) throw error;
+      if (error) return errJson(error);
       return NextResponse.json({ ok: true, data });
     }
 
@@ -91,11 +146,11 @@ export async function POST(req: Request) {
         .eq("animal_id", animal_id)
         .order("sort_order", { ascending: true })
         .order("id", { ascending: true });
-      if (error) throw error;
+      if (error) return errJson(error);
       return NextResponse.json({ ok: true, data });
     }
 
-    /* ----------------------- MUTATIONS ----------------------- */
+    /* ───────────── Mutations ───────────── */
     if (action === "upsertAnimal") {
       const { payload } = body as { payload: { tenant_id: string; tag: string } & Record<string, any> };
       if (!payload?.tenant_id || !payload?.tag) {
@@ -106,7 +161,7 @@ export async function POST(req: Request) {
         .upsert(payload as any)
         .select()
         .maybeSingle();
-      if (error) throw error;
+      if (error) return errJson(error);
       return NextResponse.json({ ok: true, data });
     }
 
@@ -119,7 +174,7 @@ export async function POST(req: Request) {
         .eq("id", id)
         .select()
         .maybeSingle();
-      if (error) throw error;
+      if (error) return errJson(error);
       return NextResponse.json({ ok: true, data });
     }
 
@@ -129,7 +184,7 @@ export async function POST(req: Request) {
       };
       const row = { tenant_id, animal_id, weigh_date, weight_lb, notes: notes ?? null };
       const { data, error } = await supa.from("agriops_cattle_weights").insert(row as any).select();
-      if (error) throw error;
+      if (error) return errJson(error);
       return NextResponse.json({ ok: true, data });
     }
 
@@ -139,7 +194,7 @@ export async function POST(req: Request) {
       };
       const row = { tenant_id, animal_id, treat_date, product: product ?? null, dose: dose ?? null, notes: notes ?? null };
       const { data, error } = await supa.from("agriops_cattle_treatments").insert(row as any).select();
-      if (error) throw error;
+      if (error) return errJson(error);
       return NextResponse.json({ ok: true, data });
     }
 
@@ -151,7 +206,7 @@ export async function POST(req: Request) {
         live_weight_lb: live_weight_lb ?? null, notes: notes ?? null,
       };
       const { data, error } = await supa.from("agriops_cattle_processing").insert(row as any).select();
-      if (error) throw error;
+      if (error) return errJson(error);
       return NextResponse.json({ ok: true, data });
     }
 
@@ -164,17 +219,16 @@ export async function POST(req: Request) {
         .eq("id", id)
         .select()
         .maybeSingle();
-      if (error) throw error;
+      if (error) return errJson(error);
       return NextResponse.json({ ok: true, data });
     }
 
-    /* ----------------------- PHOTOS ----------------------- */
+    /* ───────────── Photos ───────────── */
     if (action === "addAnimalPhoto") {
       const { tenant_id, animal_id, tag, photo_url, photo_path, set_primary } = body as {
         tenant_id: string; animal_id: number; tag: string; photo_url: string; photo_path: string; set_primary?: boolean;
       };
 
-      // insert photo
       const { data: inserted, error } = await supa
         .from("agriops_animal_photos")
         .insert({
@@ -184,50 +238,67 @@ export async function POST(req: Request) {
         } as any)
         .select()
         .maybeSingle();
-      if (error) throw error;
+      if (error) return errJson(error);
 
-      // optionally set as primary on animal
       if (set_primary && inserted?.id) {
-        await supa.from("agriops_cattle").update({ primary_photo_url: photo_url })
+        const up1 = await supa.from("agriops_cattle")
+          .update({ primary_photo_url: inserted.photo_url })
           .eq("tenant_id", tenant_id).eq("id", animal_id);
-        await supa.from("agriops_animal_photos").update({ is_primary: false })
-          .eq("tenant_id", tenant_id).eq("animal_id", animal_id);
-        await supa.from("agriops_animal_photos").update({ is_primary: true })
-          .eq("tenant_id", tenant_id).eq("id", inserted.id);
+        if (up1.error) return errJson(up1.error);
+
+        const clr = await supa.from("agriops_animal_photos")
+          .update({ is_primary: false })
+          .eq("tenant_id", tenant_id)
+          .eq("animal_id", animal_id);
+        if (clr.error) return errJson(clr.error);
+
+        const sp = await supa.from("agriops_animal_photos")
+          .update({ is_primary: true })
+          .eq("tenant_id", tenant_id)
+          .eq("id", inserted.id);
+        if (sp.error) return errJson(sp.error);
       }
       return NextResponse.json({ ok: true, data: inserted });
     }
 
     if (action === "setPrimaryPhoto") {
       const { tenant_id, animal_id, id } = body as { tenant_id: string; animal_id: number; id: number };
-      // find URL for id
       const { data: photo, error: e1 } = await supa
         .from("agriops_animal_photos")
         .select("*").eq("tenant_id", tenant_id).eq("id", id).maybeSingle();
-      if (e1) throw e1;
+      if (e1) return errJson(e1);
       if (!photo) return NextResponse.json({ ok: false, error: "Photo not found" }, { status: 404 });
 
-      await supa.from("agriops_cattle").update({ primary_photo_url: photo.photo_url })
+      const up1 = await supa.from("agriops_cattle")
+        .update({ primary_photo_url: photo.photo_url })
         .eq("tenant_id", tenant_id).eq("id", animal_id);
-      await supa.from("agriops_animal_photos").update({ is_primary: false })
-        .eq("tenant_id", tenant_id).eq("animal_id", animal_id);
-      await supa.from("agriops_animal_photos").update({ is_primary: true })
-        .eq("tenant_id", tenant_id).eq("id", id);
+      if (up1.error) return errJson(up1.error);
+
+      const clr = await supa.from("agriops_animal_photos")
+        .update({ is_primary: false })
+        .eq("tenant_id", tenant_id)
+        .eq("animal_id", animal_id);
+      if (clr.error) return errJson(clr.error);
+
+      const sp = await supa.from("agriops_animal_photos")
+        .update({ is_primary: true })
+        .eq("tenant_id", tenant_id)
+        .eq("id", id);
+      if (sp.error) return errJson(sp.error);
 
       return NextResponse.json({ ok: true, data: { id } });
     }
 
     if (action === "deleteAnimalPhoto") {
       const { tenant_id, animal_id, id } = body as { tenant_id: string; animal_id: number; id: number };
-      const { error } = await supa
+      const del = await supa
         .from("agriops_animal_photos")
         .delete()
         .eq("tenant_id", tenant_id)
         .eq("animal_id", animal_id)
         .eq("id", id);
-      if (error) throw error;
+      if (del.error) return errJson(del.error);
 
-      // If deleted one was primary, clear animal primary url (optional)
       const { data: remaining } = await supa
         .from("agriops_animal_photos")
         .select("*")
@@ -236,9 +307,11 @@ export async function POST(req: Request) {
         .order("is_primary", { ascending: false })
         .limit(1);
       const nextUrl = remaining?.[0]?.photo_url ?? null;
-      await supa.from("agriops_cattle")
+
+      const up1 = await supa.from("agriops_cattle")
         .update({ primary_photo_url: nextUrl })
         .eq("tenant_id", tenant_id).eq("id", animal_id);
+      if (up1.error) return errJson(up1.error);
 
       return NextResponse.json({ ok: true, data: { deleted: id } });
     }
@@ -248,31 +321,31 @@ export async function POST(req: Request) {
       if (!Array.isArray(ordered_ids)) {
         return NextResponse.json({ ok: false, error: "ordered_ids must be an array" }, { status: 400 });
       }
-      // simple positional update
       for (let i = 0; i < ordered_ids.length; i++) {
-        await supa.from("agriops_animal_photos")
+        const up = await supa.from("agriops_animal_photos")
           .update({ sort_order: i })
           .eq("tenant_id", tenant_id)
           .eq("animal_id", animal_id)
           .eq("id", ordered_ids[i]);
+        if (up.error) return errJson(up.error);
       }
       return NextResponse.json({ ok: true, data: { reordered: ordered_ids.length } });
     }
 
-    /* ----------------------- BULK IMPORT ----------------------- */
+    /* ───────────── Bulk import ───────────── */
     if (action === "bulkUpsertAnimals") {
       const { rows } = body as { rows: any[] };
       if (!Array.isArray(rows) || rows.length === 0) {
         return NextResponse.json({ ok: false, error: "rows required" }, { status: 400 });
       }
       const { data, error } = await supa.from("agriops_cattle").upsert(rows as any);
-      if (error) throw error;
+      if (error) return errJson(error);
       return NextResponse.json({ ok: true, data: { imported: rows.length } });
     }
 
     return NextResponse.json({ ok: false, error: `Unknown action: ${action}` }, { status: 400 });
   } catch (err: any) {
-    console.error("[/api/cattle] error", err);
-    return NextResponse.json({ ok: false, error: err?.message || "Server error" }, { status: 500 });
+    console.error("[/api/cattle] fatal error", err);
+    return errJson(err);
   }
 }
