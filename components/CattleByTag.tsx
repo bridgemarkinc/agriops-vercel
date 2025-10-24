@@ -170,50 +170,50 @@ export default function CattleByTag({ tenantId }: { tenantId: string }) {
 
   /* loaders */
   async function loadAnimals() {
-    if (!supabase) return alert("Supabase not configured");
-    setLoading(true);
-    const q = supabase
-      .from("agriops_cattle")
-      .select("*")
-      .eq("tenant_id", tenantId)
-      .order("tag");
-    const { data, error } = search.trim()
-      ? await q.ilike("tag", `%${search.trim()}%`)
-      : await q;
-    setLoading(false);
-    if (error) return alert(error.message);
+  setLoading(true);
+  try {
+    const data = await api("listAnimals", { tenant_id: tenantId, search: search.trim() || null });
     setAnimals((data || []) as Animal[]);
+  } catch (e: any) {
+    alert(e.message || "Failed to load animals");
+  } finally {
+    setLoading(false);
   }
+}
 
-  async function loadDetail(animalId: number) {
-    if (!supabase) return;
+  // Detail
+async function loadDetail(animalId: number) {
+  try {
     const [ws, ts] = await Promise.all([
-      supabase
-        .from("agriops_cattle_weights")
-        .select("*")
-        .eq("tenant_id", tenantId)
-        .eq("animal_id", animalId)
-        .order("weigh_date", { ascending: false }),
-      supabase
-        .from("agriops_cattle_treatments")
-        .select("*")
-        .eq("tenant_id", tenantId)
-        .eq("animal_id", animalId)
-        .order("treat_date", { ascending: false }),
+      api("listWeights", { tenant_id: tenantId, animal_id: animalId }),
+      api("listTreatments", { tenant_id: tenantId, animal_id: animalId }),
     ]);
-    setWeights((ws.data || []) as Weight[]);
-    setTreats((ts.data || []) as Treatment[]);
+    setWeights(ws || []);
+    setTreats(ts || []);
+  } catch (e: any) {
+    alert(e.message || "Failed to load detail");
   }
+}
 
-  async function loadProcessing(animalId: number) {
+  // Processing
+async function loadProcessing(animalId: number) {
+  try {
     const data = await api("listProcessing", { tenant_id: tenantId, animal_id: animalId });
     setProcessing((data || []) as Processing[]);
+  } catch (e: any) {
+    alert(e.message || "Failed to load processing");
   }
+}
 
-  async function loadPhotos(animalId: number) {
+  // Photos
+async function loadPhotos(animalId: number) {
+  try {
     const data = await api("listAnimalPhotos", { tenant_id: tenantId, animal_id: animalId });
     setPhotos((data || []) as PhotoRow[]);
+  } catch (e: any) {
+    alert(e.message || "Failed to load photos");
   }
+}
 
   function startEdit(a: Animal) {
     setEditing(a);
