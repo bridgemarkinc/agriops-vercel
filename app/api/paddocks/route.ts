@@ -121,77 +121,57 @@ export async function POST(req: Request) {
       }
 
             case "upsertSeeding": {
-        // Accept payload in multiple shapes to be resilient with the client
-        const b = body as any;
+  const b = body as any;
 
-        // Prefer explicit tenant_id, but fall back to nested just in case
-        const tenant_id: string =
-          b.tenant_id ??
-          b.payload?.tenant_id ??
-          b.row?.tenant_id ??
-          "";
+  const tenant_id: string =
+    b.tenant_id ?? b.payload?.tenant_id ?? b.row?.tenant_id ?? "";
+  const paddock_id_raw =
+    b.payload?.paddock_id ?? b.row?.paddock_id ?? b.paddock_id ?? null;
+  const paddock_id = paddock_id_raw != null ? Number(paddock_id_raw) : null;
 
-        // Pull paddock_id from common places and coerce to number
-        const paddock_id_raw =
-          b.payload?.paddock_id ??
-          b.row?.paddock_id ??
-          b.paddock_id ??
-          null;
+  const date_planted =
+    b.payload?.date_planted ?? b.row?.date_planted ?? b.date_planted ?? null;
 
-        const paddock_id =
-          paddock_id_raw != null ? Number(paddock_id_raw) : null;
+  const mix_name =
+    (b.payload?.mix_name ?? b.row?.mix_name ?? b.mix_name ?? null) as string | null;
 
-        // Other fields (all optional)
-        const date_planted =
-          b.payload?.date_planted ??
-          b.row?.date_planted ??
-          b.date_planted ??
-          null;
+  // ⬇️ Always coerce to an array (empty array if missing)
+  const mix_items_raw =
+    b.payload?.mix_items ?? b.row?.mix_items ?? b.mix_items ?? [];
+  const mix_items = Array.isArray(mix_items_raw)
+    // (optional) prune empty species rows
+    ? mix_items_raw.filter((i: any) => (i?.species ?? "").trim() !== "")
+    : [];
 
-        const mix_name =
-          (b.payload?.mix_name ??
-            b.row?.mix_name ??
-            b.mix_name ??
-            null) as string | null;
+  const notes =
+    (b.payload?.notes ?? b.row?.notes ?? b.notes ?? null) as string | null;
 
-        // store as JSONB; allow empty arrays to become null
-        const mix_items =
-          (b.payload?.mix_items ??
-            b.row?.mix_items ??
-            b.mix_items ??
-            null) || null;
+  if (!tenant_id || !paddock_id) {
+    return NextResponse.json(
+      { ok: false, error: "tenant_id and paddock_id are required" },
+      { status: 400 }
+    );
+  }
 
-        const notes =
-          (b.payload?.notes ??
-            b.row?.notes ??
-            b.notes ??
-            null) as string | null;
+  const row = {
+    tenant_id,
+    paddock_id,
+    date_planted: date_planted ?? null,
+    mix_name: mix_name ?? null,
+    mix_items, // ⬅️ always an array (never null)
+    notes: notes ?? null,
+  };
 
-        if (!tenant_id || !paddock_id) {
-          return NextResponse.json(
-            { ok: false, error: "tenant_id and paddock_id are required" },
-            { status: 400 }
-          );
-        }
+  const { data, error } = await supa
+    .from("agriops_paddock_seeding")
+    .upsert(row as any)
+    .select()
+    .maybeSingle();
 
-        const row = {
-          tenant_id,
-          paddock_id,
-          date_planted: date_planted ?? null,
-          mix_name: mix_name ?? null,
-          mix_items: Array.isArray(mix_items) && mix_items.length ? mix_items : null,
-          notes: notes ?? null,
-        };
+  if (error) throw error;
+  return NextResponse.json({ ok: true, data });
+}
 
-        const { data, error } = await supa
-          .from("agriops_paddock_seeding")
-          .upsert(row as any)
-          .select()
-          .maybeSingle();
-
-        if (error) throw error;
-        return NextResponse.json({ ok: true, data });
-      }
 
 
       case "deleteSeeding": {
