@@ -4,6 +4,15 @@ import { createClient } from "@supabase/supabase-js";
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs"; // keep Node (Edge won't see server-only envs)
 
+export async function GET() {
+  const keys = Object.keys(process.env).filter(k => k.startsWith("SUPABASE")).sort();
+  return NextResponse.json({
+    has_SUPABASE_URL: !!process.env.SUPABASE_URL || !!process.env.NEXT_PUBLIC_SUPABASE_URL,
+    has_SUPABASE_SERVICE_ROLE: !!process.env.SUPABASE_SERVICE_ROLE,
+    listed_env_keys: keys, // names only, no values
+  });
+}
+
 /** Create Supabase with SERVICE ROLE (server-only; bypasses RLS) */
 function getSupabaseService() {
   // ✅ Prefer server var; fall back to public for compatibility
