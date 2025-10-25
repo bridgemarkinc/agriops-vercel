@@ -120,41 +120,79 @@ export async function POST(req: Request) {
         return NextResponse.json({ ok: true, data });
       }
 
-      case "upsertSeeding": {
-        // UI posts: { payload: { paddock_id, date_planted, mix_name, mix_items, notes } }
-        const { tenant_id, payload } = body as {
-          tenant_id: string;
-          payload: {
-            paddock_id: number;
-            date_planted?: string | null;
-            mix_name?: string | null;
-            mix_items?: Array<{ species: string; rate_lb_ac: number }> | null;
-            notes?: string | null;
-          };
-        };
-        if (!tenant_id || !payload?.paddock_id) {
+            case "upsertSeeding": {
+        // Accept payload in multiple shapes to be resilient with the client
+        const b = body as any;
+
+        // Prefer explicit tenant_id, but fall back to nested just in case
+        const tenant_id: string =
+          b.tenant_id ??
+          b.payload?.tenant_id ??
+          b.row?.tenant_id ??
+          "";
+
+        // Pull paddock_id from common places and coerce to number
+        const paddock_id_raw =
+          b.payload?.paddock_id ??
+          b.row?.paddock_id ??
+          b.paddock_id ??
+          null;
+
+        const paddock_id =
+          paddock_id_raw != null ? Number(paddock_id_raw) : null;
+
+        // Other fields (all optional)
+        const date_planted =
+          b.payload?.date_planted ??
+          b.row?.date_planted ??
+          b.date_planted ??
+          null;
+
+        const mix_name =
+          (b.payload?.mix_name ??
+            b.row?.mix_name ??
+            b.mix_name ??
+            null) as string | null;
+
+        // store as JSONB; allow empty arrays to become null
+        const mix_items =
+          (b.payload?.mix_items ??
+            b.row?.mix_items ??
+            b.mix_items ??
+            null) || null;
+
+        const notes =
+          (b.payload?.notes ??
+            b.row?.notes ??
+            b.notes ??
+            null) as string | null;
+
+        if (!tenant_id || !paddock_id) {
           return NextResponse.json(
-            { ok: false, error: "tenant_id and payload.paddock_id are required" },
+            { ok: false, error: "tenant_id and paddock_id are required" },
             { status: 400 }
           );
         }
+
         const row = {
           tenant_id,
-          paddock_id: payload.paddock_id,
-          date_planted: payload.date_planted ?? null,
-          mix_name: (payload.mix_name || null) as string | null,
-          // Store array as JSONB
-          mix_items: payload.mix_items ?? null,
-          notes: (payload.notes || null) as string | null,
+          paddock_id,
+          date_planted: date_planted ?? null,
+          mix_name: mix_name ?? null,
+          mix_items: Array.isArray(mix_items) && mix_items.length ? mix_items : null,
+          notes: notes ?? null,
         };
+
         const { data, error } = await supa
           .from("agriops_paddock_seeding")
           .upsert(row as any)
           .select()
           .maybeSingle();
+
         if (error) throw error;
         return NextResponse.json({ ok: true, data });
       }
+
 
       case "deleteSeeding": {
         const { tenant_id, id } = body as { tenant_id: string; id: number };
