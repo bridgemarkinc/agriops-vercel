@@ -1,36 +1,19 @@
-// app/api/paddocks/route.ts
 import { NextResponse } from "next/server";
 import { createClient } from "@supabase/supabase-js";
 
 export const dynamic = "force-dynamic";
-export const runtime = "nodejs"; // <-- make sure we are on Node, not Edge
+export const runtime = "nodejs";
 
+/** Server-side Supabase with SERVICE ROLE (never expose in client). */
 function getSupabaseService() {
-  // Accept common variants so a name mismatch doesn't break prod
-  const url =
-    process.env.SUPABASE_URL ||
-    process.env.NEXT_PUBLIC_SUPABASE_URL ||
-    "";
-
-  const service =
-    process.env.SUPABASE_SERVICE_ROLE ||
-    process.env.SUPABASE_SERVICE_ROLE_KEY || // many dashboards label it this way
-    "";
-
+  const url = process.env.NEXT_PUBLIC_SUPABASE_URL!;
+  const service = process.env.SUPABASE_SERVICE_ROLE!;
   if (!url || !service) {
-    return {
-      client: null as any,
-      missing: {
-        SUPABASE_URL_or_NEXT_PUBLIC_SUPABASE_URL: !!url,
-        SUPABASE_SERVICE_ROLE_or_KEY: !!service,
-      },
-    };
+    throw new Error("Missing env: NEXT_PUBLIC_SUPABASE_URL and/or SUPABASE_SERVICE_ROLE");
   }
-
-  const client = createClient(url, service, {
+  return createClient(url, service, {
     auth: { persistSession: false, autoRefreshToken: false },
   });
-  return { client, missing: null as null };
 }
 
 // Safe JSON reader — never throws
@@ -47,45 +30,24 @@ export async function OPTIONS() {
 }
 
 export async function POST(req: Request) {
-  const { client: supa, missing } = getSupabaseService();
-  if (!supa) {
-    return NextResponse.json(
-      {
-        ok: false,
-        error:
-          "Missing env vars on server. Set SUPABASE_URL (or NEXT_PUBLIC_SUPABASE_URL) AND SUPABASE_SERVICE_ROLE (or SUPABASE_SERVICE_ROLE_KEY).",
-        // Diagnostics (booleans only; no secrets)
-        diagnostics: missing,
-      },
-      { status: 500 }
-    );
-  }
-
+  const supa = getSupabaseService();
   try {
     const body = await readJson(req);
     if (!body) {
-      return NextResponse.json(
-        { ok: false, error: "Invalid JSON body" },
-        { status: 400 }
-      );
+      return NextResponse.json({ ok: false, error: "Invalid JSON body" }, { status: 400 });
     }
 
     const { action } = body as { action?: string };
     if (!action) {
-      return NextResponse.json(
-        { ok: false, error: "Missing 'action'" },
-        { status: 400 }
-      );
+      return NextResponse.json({ ok: false, error: "Missing 'action'" }, { status: 400 });
     }
 
     switch (action) {
+      /** ─────────────── Paddocks ─────────────── */
       case "listWithCounts": {
         const { tenant_id } = body as { tenant_id: string };
         if (!tenant_id) {
-          return NextResponse.json(
-            { ok: false, error: "tenant_id is required" },
-            { status: 400 }
-          );
+          return NextResponse.json({ ok: false, error: "tenant_id is required" }, { status: 400 });
         }
         const { data, error } = await supa
           .from("agriops_paddocks_with_counts")
@@ -99,7 +61,7 @@ export async function POST(req: Request) {
       case "upsertPaddock": {
         const { tenant_id, row } = body as {
           tenant_id: string;
-          row: { id?: number; name: string; acres?: number | null };
+          row: { id?: number; name: string; acres?: number | null; zone?: string | null; notes?: string | null };
         };
         if (!tenant_id || !row?.name) {
           return NextResponse.json(
@@ -134,11 +96,20 @@ export async function POST(req: Request) {
         return NextResponse.json({ ok: true, data: { deleted: id } });
       }
 
+      /** ─────────────── Seeding ───────────────
+       * Matches UI: { paddock_id, date_planted, mix_name, mix_items(JSON), notes }
+       * Ensure DB columns exist:
+       *  - id PK, tenant_id uuid/text, paddock_id int, date_planted date null,
+       *  - mix_name text null, mix_items jsonb null, notes text null, created_at timestamptz default now()
+       */
       case "listSeeding": {
-        const { tenant_id, paddock_id } = body as {
-          tenant_id: string;
-          paddock_id: number;
-        };
+        const { tenant_id, paddock_id } = body as { tenant_id: string; paddock_id: number };
+        if (!tenant_id || !paddock_id) {
+          return NextResponse.json(
+            { ok: false, error: "tenant_id and paddock_id are required" },
+            { status: 400 }
+          );
+        }
         const { data, error } = await supa
           .from("agriops_paddock_seeding")
           .select("*")
@@ -150,30 +121,35 @@ export async function POST(req: Request) {
       }
 
       case "upsertSeeding": {
-        const { tenant_id, row } = body as {
+        // UI posts: { payload: { paddock_id, date_planted, mix_name, mix_items, notes } }
+        const { tenant_id, payload } = body as {
           tenant_id: string;
-          row: {
-            id?: number;
+          payload: {
             paddock_id: number;
-            seed_mix_name: string;
-            species: string;
-            rate_lb_ac?: number | null;
+            date_planted?: string | null;
+            mix_name?: string | null;
+            mix_items?: Array<{ species: string; rate_lb_ac: number }> | null;
             notes?: string | null;
           };
         };
-        if (!tenant_id || !row?.paddock_id || !row?.seed_mix_name) {
+        if (!tenant_id || !payload?.paddock_id) {
           return NextResponse.json(
-            {
-              ok: false,
-              error: "tenant_id, paddock_id and seed_mix_name are required",
-            },
+            { ok: false, error: "tenant_id and payload.paddock_id are required" },
             { status: 400 }
           );
         }
-        const payload = { ...row, tenant_id };
+        const row = {
+          tenant_id,
+          paddock_id: payload.paddock_id,
+          date_planted: payload.date_planted ?? null,
+          mix_name: (payload.mix_name || null) as string | null,
+          // Store array as JSONB
+          mix_items: payload.mix_items ?? null,
+          notes: (payload.notes || null) as string | null,
+        };
         const { data, error } = await supa
           .from("agriops_paddock_seeding")
-          .upsert(payload as any)
+          .upsert(row as any)
           .select()
           .maybeSingle();
         if (error) throw error;
@@ -197,11 +173,20 @@ export async function POST(req: Request) {
         return NextResponse.json({ ok: true, data: { deleted: id } });
       }
 
+      /** ─────────────── Amendments ───────────────
+       * Matches UI: { date_applied, product, rate, notes }
+       * Ensure DB columns exist:
+       *  - id PK, tenant_id, paddock_id, date_applied date, product text,
+       *  - rate text null, notes text null, created_at timestamptz default now()
+       */
       case "listAmendments": {
-        const { tenant_id, paddock_id } = body as {
-          tenant_id: string;
-          paddock_id: number;
-        };
+        const { tenant_id, paddock_id } = body as { tenant_id: string; paddock_id: number };
+        if (!tenant_id || !paddock_id) {
+          return NextResponse.json(
+            { ok: false, error: "tenant_id and paddock_id are required" },
+            { status: 400 }
+          );
+        }
         const { data, error } = await supa
           .from("agriops_paddock_amendments")
           .select("*")
@@ -213,26 +198,34 @@ export async function POST(req: Request) {
       }
 
       case "upsertAmendment": {
-        const { tenant_id, row } = body as {
+        // UI posts: { payload: { paddock_id, date_applied, product, rate, notes } }
+        const { tenant_id, payload } = body as {
           tenant_id: string;
-          row: {
-            id?: number;
+          payload: {
             paddock_id: number;
+            date_applied?: string | null;
             product: string;
-            rate_unit_ac: string;
+            rate?: string | null; // NOTE: string, not rate_unit_ac
             notes?: string | null;
           };
         };
-        if (!tenant_id || !row?.paddock_id || !row?.product) {
+        if (!tenant_id || !payload?.paddock_id || !payload?.product) {
           return NextResponse.json(
-            { ok: false, error: "tenant_id, paddock_id and product are required" },
+            { ok: false, error: "tenant_id, payload.paddock_id and payload.product are required" },
             { status: 400 }
           );
         }
-        const payload = { ...row, tenant_id };
+        const row = {
+          tenant_id,
+          paddock_id: payload.paddock_id,
+          date_applied: payload.date_applied ?? null,
+          product: payload.product,
+          rate: payload.rate ?? null, // align with UI
+          notes: payload.notes ?? null,
+        };
         const { data, error } = await supa
           .from("agriops_paddock_amendments")
-          .upsert(payload as any)
+          .upsert(row as any)
           .select()
           .maybeSingle();
         if (error) throw error;
@@ -257,10 +250,7 @@ export async function POST(req: Request) {
       }
 
       default:
-        return NextResponse.json(
-          { ok: false, error: `Unknown action: ${action}` },
-          { status: 400 }
-        );
+        return NextResponse.json({ ok: false, error: `Unknown action: ${action}` }, { status: 400 });
     }
   } catch (err: any) {
     console.error("[/api/paddocks] error", err);
