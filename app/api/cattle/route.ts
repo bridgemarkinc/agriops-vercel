@@ -177,7 +177,7 @@ export async function POST(req: Request) {
         const animal_id = Number(body?.animal_id);
         if (!tenant_id || !animal_id) return bad(400, "tenant_id and animal_id required");
         const { data, error } = await supa
-          .from("agriops_processing")
+          .from("agriops_cattle_processing")
           .select("*")
           .eq("tenant_id", tenant_id)
           .eq("animal_id", animal_id)
@@ -199,7 +199,7 @@ export async function POST(req: Request) {
           return bad(400, "tenant_id, animal_id, tag, sent_date required");
 
         const { error } = await supa
-          .from("agriops_processing")
+          .from("agriops_cattle_processing")
           .insert({
             tenant_id,
             animal_id,
@@ -221,7 +221,7 @@ export async function POST(req: Request) {
         const patch = body?.patch || {};
         if (!tenant_id || !id) return bad(400, "tenant_id and id required");
         const { error } = await supa
-          .from("agriops_processing")
+          .from("agriops_cattle_processing")
           .update({
             status: patch.status ?? undefined,
             processor: patch.processor ?? undefined,
