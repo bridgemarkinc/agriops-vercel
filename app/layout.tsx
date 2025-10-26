@@ -2,11 +2,7 @@
 import "./globals.css";
 import React from "react";
 import type { Metadata } from "next";
-import { cookies, headers } from "next/headers";
-import { TenantProvider, AppHeader } from "@/components/tenant";
-
-
-export const runtime = "nodejs";
+import AppHeader from "@/components/AppHeader";
 
 export const metadata: Metadata = {
   title: "AgriOps",
@@ -14,28 +10,22 @@ export const metadata: Metadata = {
 };
 
 export default function RootLayout({ children }: { children: React.ReactNode }) {
-  const cookieStore = cookies();
-  const hdrs = headers();
-  const cookieTenant = cookieStore.get("tenant_id")?.value;
-  const headerTenant = hdrs.get("x-tenant-id") || undefined;
-  const envTenant = process.env.NEXT_PUBLIC_TENANT || process.env.TENANT_ID || "";
-  const initialTenantId = cookieTenant || headerTenant || envTenant || "";
-
-   // ✅ Define tenant once here
-  const defaultTenant =
-    process.env.NEXT_PUBLIC_TENANT_ID ||
-    process.env.TENANT_ID ||
-    "";
+  // If you have a tenant id string available, you can put it here
+  const tenantLabel = ""; // e.g. "Tenant: ranch-123"
 
   return (
     <html lang="en" className="h-full">
       <body className="min-h-full bg-slate-50">
-        <TenantProvider initialTenantId={defaultTenant}>
-          <AppHeader />
-          <main className="mx-auto max-w-6xl px-4 py-10">
-            {children}
-          </main>
-        </TenantProvider>
+        <div className="mx-auto max-w-6xl px-4 py-4">
+          <AppHeader
+            imageSrc="https://yxgnrgesmtgdbszgwaoe.supabase.co/storage/v1/object/public/images/sunrise.png"
+            title="AgriOps"
+            subtitle="Cattle & Pasture Operations Management"
+            tenantLabel={tenantLabel}
+            height="md"
+          />
+        </div>
+        <main className="mx-auto max-w-6xl px-4 pb-10">{children}</main>
       </body>
     </html>
   );
