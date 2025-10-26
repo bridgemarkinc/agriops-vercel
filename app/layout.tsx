@@ -30,15 +30,9 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
       <body className="min-h-full bg-slate-50">
         <TenantProvider initialTenantId={initialTenantId}>
           <AppHeader />
-          <div className="mx-auto max-w-6xl px-4 py-4">
-            <AppBanner
-              imageSrc={bannerUrl}
-              title="AgriOps"
-              subtitle="Cattle and Pasture Operations Management"
-              height="md"
-            />
-          </div>
-          <main className="mx-auto max-w-6xl px-4 pb-10">{children}</main>
+          <main className="mx-auto max-w-6xl px-4 py-8">
+            {children}
+          </main>
         </TenantProvider>
       </body>
     </html>

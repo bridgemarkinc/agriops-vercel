@@ -2,21 +2,48 @@
 "use client";
 
 import React from "react";
+import Link from "next/link";
+import Image from "next/image";
 import { useTenant } from "@/components/tenant";
 
 export default function AppHeader() {
-  const { brand } = useTenant(); // no loadBrand / loadingBrand / tenant picker
-  const logo = brand?.logo_url || "/blackriver-logo.png";
-  const appName = brand?.app_name || "AgriOps";
+  const { tenantId } = useTenant();
+
+  // Optional PUBLIC overrides (safe for client)
+  const logoUrl =
+    process.env.NEXT_PUBLIC_LOGO_URL ||
+    "/blackriver-logo.png"; // fallback to a local asset (ensure it exists)
+  const appName = process.env.NEXT_PUBLIC_APP_NAME || "AgriOps";
 
   return (
-    <div className="border-b bg-white/80 backdrop-blur">
-      <div className="max-w-6xl mx-auto px-4 py-3 flex items-center gap-4">
-        {/* Bigger logo for legibility */}
-        <img src={logo} alt={appName} className="h-16 w-auto" />
-        <span className="sr-only">{appName}</span>
-        {/* No pill menu, no brand loader, no tenant input */}
+    <header className="w-full border-b bg-white/90 backdrop-blur">
+      <div className="mx-auto max-w-6xl px-4 h-14 flex items-center justify-between gap-3">
+        <div className="flex items-center gap-3">
+          {/* Logo (optional) */}
+          {logoUrl ? (
+            <Link href="/" className="flex items-center gap-2">
+              {/* Give width/height for next/image */}
+              <Image
+                src={logoUrl}
+                alt={appName}
+                width={28}
+                height={28}
+                className="rounded-md object-cover"
+                priority
+              />
+              <span className="text-base font-semibold tracking-tight">{appName}</span>
+            </Link>
+          ) : (
+            <Link href="/" className="text-base font-semibold tracking-tight">
+              {appName}
+            </Link>
+          )}
+        </div>
+
+        <div className="text-sm text-slate-600">
+          Tenant: <span className="font-mono">{tenantId || "unset"}</span>
+        </div>
       </div>
-    </div>
+    </header>
   );
 }

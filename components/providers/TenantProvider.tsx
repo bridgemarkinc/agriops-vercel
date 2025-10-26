@@ -1,29 +1,41 @@
+// components/providers/TenantProvider.tsx
 "use client";
 
-import React, { createContext, useContext, useMemo, useState } from "react";
+import React, { createContext, useContext, useState, useMemo } from "react";
 
-type TenantCtx = {
+type TenantContextValue = {
   tenantId: string;
-  setTenantId: (v: string) => void;
+  setTenantId: (id: string) => void;
 };
 
-const TenantContext = createContext<TenantCtx | undefined>(undefined);
+const TenantContext = createContext<TenantContextValue | undefined>(undefined);
 
-/** Safe hook: in production, fallback to empty string instead of throwing hard */
+export function TenantProvider({
+  initialTenantId = "",
+  children,
+}: {
+  initialTenantId?: string;
+  children: React.ReactNode;
+}) {
+  const [tenantId, setTenantId] = useState(initialTenantId);
+
+  const value = useMemo(
+    () => ({ tenantId, setTenantId }),
+    [tenantId]
+  );
+
+  return (
+    <TenantContext.Provider value={value}>
+      {children}
+    </TenantContext.Provider>
+  );
+}
+
 export function useTenant() {
   const ctx = useContext(TenantContext);
   if (!ctx) {
-    if (process.env.NODE_ENV !== "production") {
-      throw new Error("useTenant must be used within TenantProvider");
-    }
-    // Soft-fallback in prod to avoid 500s on routes that forget the provider
-    return { tenantId: "", setTenantId: () => {} } as TenantCtx;
+    throw new Error("useTenant must be used within TenantProvider");
   }
   return ctx;
 }
 
-export function TenantProvider({ initialTenantId, children }: { initialTenantId?: string; children: React.ReactNode }) {
-  const [tenantId, setTenantId] = useState(initialTenantId ?? "");
-  const value = useMemo(() => ({ tenantId, setTenantId }), [tenantId]);
-  return <TenantContext.Provider value={value}>{children}</TenantContext.Provider>;
-}
