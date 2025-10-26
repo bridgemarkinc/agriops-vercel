@@ -37,7 +37,7 @@ export default function AppBanner({
   children,
   className = "",
 }: AppBannerProps) {
-  const src = imageSrc || "/images/sunrise-pasture.jpg"; // default if using /public
+  const src = imageSrc || "/images/sunrise.png"; // default if using /public
   return (
     <section
       className={[
