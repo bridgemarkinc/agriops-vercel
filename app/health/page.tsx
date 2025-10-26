@@ -3,10 +3,15 @@
 
 import React from "react";
 import HealthMonitor from "@/components/HealthMonitor";
-import { useTenant } from "@/components/tenant";
 
 export default function HealthPage() {
-  //const { tenantId } = useTenant(); // comes from TenantProvider in app/layout.tsx//
-  //return <HealthMonitor tenantId={tenantId} />;//
+  // Use a safe default tenant for this page (customize if you like)
+  const tenantId =
+    process.env.NEXT_PUBLIC_TENANT ||
+    process.env.NEXT_PUBLIC_DEFAULT_TENANT ||
+    "public";
+
+  return <HealthMonitor tenantId={tenantId} />;
 }
+
 
