@@ -27,7 +27,7 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
         <div className="mx-auto max-w-6xl px-4 py-4">
           <AppBanner
             // If you used Supabase public URL, pass it here:
-            // imageSrc="https://yxgnrgesmtgdbszgwaoe.supabase.co/public/sunrise.png"
+            // imageSrc="https://yxgnrgesmtgdbszgwaoe.supabase.co/storage/v1/object/public/images/sunrise.png"
             title="AgriOps"
             subtitle="Cattle and Pasture Operations Management"
             height="md"
