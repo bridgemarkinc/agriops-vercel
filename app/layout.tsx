@@ -29,7 +29,7 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
             // If you used Supabase public URL, pass it here:
             // imageSrc="https://your-project.supabase.co/storage/v1/object/public/sunrise.png"
             title="AgriOps"
-            subtitle="Cattle and Pasture Operations Management
+            subtitle="Cattle and Pasture Operations Management"
             height="md"
           />
         </div>
