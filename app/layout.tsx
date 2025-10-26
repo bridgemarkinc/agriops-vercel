@@ -3,6 +3,7 @@ import "./globals.css";
 import React from "react";
 import { TenantProvider, AppHeader } from "@/components/tenant";
 import type { Metadata } from "next";
+import { cookies, headers } from "next/headers";
 import AppBanner from "@/components/AppBanner";
 
 export const metadata: Metadata = {
@@ -11,6 +12,14 @@ export const metadata: Metadata = {
 };
 
 export default function RootLayout({ children }: { children: React.ReactNode }) {
+  // Server-side: derive tenant once
+  const cookieStore = cookies();
+  const hdrs = headers();
+  const cookieTenant = cookieStore.get("tenant_id")?.value;
+  const headerTenant = hdrs.get("x-tenant-id") || undefined;
+  const envTenant = process.env.NEXT_PUBLIC_TENANT || process.env.TENANT_ID || "";
+  const initialTenantId = cookieTenant || headerTenant || envTenant || "";
+
   return (
     <html lang="en" className="h-full">
       <body className="min-h-full bg-slate-50">
