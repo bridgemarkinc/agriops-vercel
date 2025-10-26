@@ -141,41 +141,42 @@ export default function PastureMaintenance({ tenantId }: { tenantId: string }) {
   }
 
   /* Save Seeding — ALWAYS send mix_items array */
-  async function saveSeeding() {
+    async function saveSeeding() {
     if (!activePad) return;
+
+    const payload = {
+      paddock_id: activePad.id,
+      date_planted: mixDraft.date_planted || null,
+      mix_name: (mixDraft.mix_name || "").trim() || null,
+      mix_items: Array.isArray(mixDraft.mix_items)
+        ? mixDraft.mix_items
+            .map((item) => ({
+              species: String(item?.species ?? "").trim(),
+              rate_lb_ac: Number(item?.rate_lb_ac ?? 0),
+            }))
+            .filter((mi) => mi.species !== "")
+        : [],
+      notes: (mixDraft.notes || "").trim() || null,
+    };
+
     try {
-      setBusyEditor(true);
-      const payload = {
-        paddock_id: activePad.id,
-        date_planted: mixDraft.date_planted || null,
-        mix_name: (mixDraft.mix_name || "").trim() || null,
-        mix_items: Array.isArray(mixDraft.mix_items)
-          ? (mixDraft.mix_items as MixItem[])
-              .map((item: MixItem) => ({
-                species: String(item?.species ?? "").trim(),
-                rate_lb_ac: Number(item?.rate_lb_ac ?? 0),
-              }))
-              .filter((mi: MixItem) => mi.species !== "")
-          : [],
-        notes: (mixDraft.notes || "").trim() || null,
-      };
       await paddocksApi("upsertSeeding", { tenant_id: tenantId, payload });
-      const seed: SeedingRow[] = await paddocksApi("listSeeding", { tenant_id: tenantId, paddock_id: activePad.id });
+      const seed = await paddocksApi("listSeeding", { tenant_id: tenantId, paddock_id: activePad.id });
       setSeedRows(seed || []);
       setMixDraft({
         tenant_id: tenantId,
         paddock_id: activePad.id,
         date_planted: "",
         mix_name: "",
-        mix_items: [{ ...emptyMixItem }],
+        mix_items: [{ species: "", rate_lb_ac: 0 }],
         notes: "",
       });
     } catch (e: any) {
-      alert(e.message || "Failed to save seeding");
-    } finally {
-      setBusyEditor(false);
+      // Show the server guard message (e.g. “Empty seeding payload …”)
+      alert(e?.message || "Failed to save seeding");
     }
   }
+
   async function deleteSeeding(id: number) {
     if (!activePad) return;
     if (!confirm("Delete this seeding record?")) return;

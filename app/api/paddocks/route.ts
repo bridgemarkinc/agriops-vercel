@@ -98,28 +98,50 @@ export async function POST(req: Request) {
         return NextResponse.json({ ok: true, data });
       }
 
-      case "upsertSeeding": {
+            case "upsertSeeding": {
         const tenant_id = String(body?.tenant_id || "");
         const payload: any = body?.payload || {};
         if (!tenant_id || !payload?.paddock_id) {
-          return NextResponse.json({ ok: false, error: "tenant_id and payload.paddock_id are required" }, { status: 400 });
+          return NextResponse.json(
+            { ok: false, error: "tenant_id and payload.paddock_id are required" },
+            { status: 400 }
+          );
         }
 
-        const items: any[] = Array.isArray(payload.mix_items) ? payload.mix_items : [];
-        const cleanItems = items
+        // Normalize items
+        const itemsIn: any[] = Array.isArray(payload.mix_items) ? payload.mix_items : [];
+        const cleanItems = itemsIn
           .map((i: any) => ({
             species: String(i?.species ?? "").trim(),
             rate_lb_ac: Number(i?.rate_lb_ac ?? 0),
           }))
-          .filter((i: { species: string }) => i.species !== "");
+          .filter((i) => i.species !== "");
+
+        const date_planted = payload.date_planted || null;
+        const mix_name = (payload.mix_name || "").trim() || null;
+        const notes = (payload.notes || "").trim() || null;
+
+        // 🔒 HARD GUARD: reject truly empty seeding payloads
+        const isEffectivelyEmpty =
+          (!mix_name || mix_name.length === 0) &&
+          (!date_planted || String(date_planted).length === 0) &&
+          cleanItems.length === 0 &&
+          (!notes || notes.length === 0);
+
+        if (isEffectivelyEmpty) {
+          return NextResponse.json(
+            { ok: false, error: "Empty seeding payload — no mix_name/date/items/notes provided" },
+            { status: 400 }
+          );
+        }
 
         const row = {
           tenant_id,
           paddock_id: Number(payload.paddock_id),
-          date_planted: payload.date_planted || null,
-          mix_name: payload.mix_name || null,
+          date_planted,
+          mix_name,
           mix_items: cleanItems, // JSONB NOT NULL
-          notes: payload.notes || null,
+          notes,
         };
 
         const { data, error } = await supa
@@ -131,6 +153,7 @@ export async function POST(req: Request) {
         if (error) throw error;
         return NextResponse.json({ ok: true, data });
       }
+
 
       case "deleteSeeding": {
         const tenant_id = String(body?.tenant_id || "");
